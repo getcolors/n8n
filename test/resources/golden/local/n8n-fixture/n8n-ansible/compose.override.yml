@@ -1,0 +1,177 @@
+# n8n on top of the Neon storage tier.
+#
+# This file is installed as /opt/neon/compose.override.yml, NOT passed with -f.
+# That is deliberate and load-bearing: the getcolors/neon play this package
+# imports runs `docker compose` with `chdir: /opt/neon` and no file flags, so an
+# overlay passed on the command line would be invisible to every Neon task and
+# handler. Compose auto-merges `compose.override.yml` sitting beside
+# `compose.yml`, which makes every unchanged Neon command -- up, restart,
+# force-recreate compute, and down -- operate on the one merged project for
+# free. It is also why `main.yml`'s `up -d --remove-orphans` is safe: the n8n
+# services are part of this project rather than orphans of it.
+#
+# There is deliberately no top-level `name:` here. neon's compose.yml declares
+# `name: neon` and keeps it. If both files declared one, merged and unmerged
+# commands would act on different projects, with different networks, and `n8n`
+# would not resolve `compute` at all.
+services:
+  n8n:
+    image: docker.io/n8nio/n8n:2.36.9@sha256:a9e2e3c8006ed453238266669ea1274be7136f515abe290a2f75a0ab9044c93d
+    restart: unless-stopped
+    depends_on:
+      compute:
+        condition: service_healthy
+    # Secrets arrive as env_files written on the HOST, never as values in this
+    # file. Two reasons, both learned the hard way:
+    #
+    #   1. `ansible.builtin.copy` with `src:` does NOT template. An inline
+    #      "{{ lookup(...) }}" is copied through literally, and the container
+    #      then authenticates with the string "{{ lookup(...) }}" -- which
+    #      presents as `password authentication failed for user "n8n"`, a
+    #      message that sends you looking at the database.
+    #   2. Even with `template:`, an Ansible lookup runs on the CONTROLLER.
+    #      /etc/neon/secrets/ exists only on the host, so `lookup('file', ...)`
+    #      could never have read it from there.
+    #
+    # host.env     -- generated on the host (role password, runner token)
+    # operator.env -- the operator's encryption key, from the controller's
+    #                 environment; never written to .colors/ or to git.
+    env_file:
+      - /etc/n8n/host.env
+      - /etc/n8n/operator.env
+    environment:
+      # --- database ---------------------------------------------------------
+      # The literal is `postgresdb`. `postgres` is silently accepted and yields
+      # SQLite: n8n starts, works, and stores every workflow in a file that
+      # nothing here backs up. The validator asserts this exact string, and an
+      # acceptance gate reads a workflow created through the public API back out
+      # of Neon, because a config check alone cannot prove the live connection.
+      DB_TYPE: postgresdb
+      # `compute` is the Neon compute node from the merged project, reached over
+      # the shared project network. Neon publishes it on 127.0.0.1:55433 for the
+      # operator's SSH tunnel; that publication is irrelevant here -- this is
+      # container-to-container traffic on the default network.
+      DB_POSTGRESDB_HOST: compute
+      DB_POSTGRESDB_PORT: "55433"
+      DB_POSTGRESDB_DATABASE: n8n
+      DB_POSTGRESDB_USER: n8n
+      DB_POSTGRESDB_SCHEMA: public
+
+      # --- identity and external URL ----------------------------------------
+      # N8N_WEBHOOK_URL, not WEBHOOK_URL: the latter is a deprecated alias as of
+      # n8n 2.35.0 and logs a startup warning. Every third-party guide still
+      # names the old one. Webhook URLs handed to third parties are forever, so
+      # this is the difference between a durable integration and a dead one.
+      N8N_HOST: n8n.example.com
+      N8N_PROTOCOL: https
+      N8N_PORT: "5678"
+      N8N_WEBHOOK_URL: "https://n8n.example.com/"
+      N8N_EDITOR_BASE_URL: "https://n8n.example.com/"
+      # Cloudflare, then Caddy. n8n's default is 0, which trusts the nearest hop
+      # and mis-attributes every client address.
+      N8N_PROXY_HOPS: "2"
+      GENERIC_TIMEZONE: Europe/Amsterdam
+      TZ: Europe/Amsterdam
+
+      # --- task runners ------------------------------------------------------
+      # N8N_RUNNERS_MODE defaults to `internal`, which runs Code nodes as a
+      # child of the main process, under the same uid, with read access to the
+      # environment that holds the encryption key directly above.
+      N8N_RUNNERS_MODE: external
+      # Default is 127.0.0.1, which a sidecar container cannot reach. The broker
+      # port is never published to the host; it is reachable only on the project
+      # network.
+      N8N_RUNNERS_BROKER_LISTEN_ADDRESS: 0.0.0.0
+
+      # --- execution data ----------------------------------------------------
+      # Pruning is already on upstream (336h / 10000), so the execution table is
+      # not the danger here. These two are, and both default to the unsafe
+      # value: binary data defaults to `default`, which holds payloads in
+      # MEMORY, and concurrency defaults to -1, unbounded. A Code node
+      # duplicates its payload twice, so peak memory is roughly 3x the largest
+      # payload times the concurrency bound -- on a host that also runs a
+      # pageserver, a safekeeper and a Postgres compute.
+      N8N_DEFAULT_BINARY_DATA_MODE: filesystem
+      N8N_CONCURRENCY_PRODUCTION_LIMIT: "10"
+      EXECUTIONS_DATA_PRUNE: "true"
+      EXECUTIONS_DATA_MAX_AGE: "336"
+      EXECUTIONS_DATA_PRUNE_MAX_COUNT: "10000"
+
+      # --- security ----------------------------------------------------------
+      # All three of these default to FALSE in n8n's environment-variable
+      # reference, contradicting the 2.0 breaking-changes page. Rendered
+      # explicitly so this deployment does not inherit whatever a future
+      # release decides, in either direction.
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "true"
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+      N8N_GIT_NODE_DISABLE_BARE_REPOS: "true"
+      N8N_RESTRICT_FILE_ACCESS_TO: /home/node/.n8n-files
+      N8N_SECURE_COOKIE: "true"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+    volumes:
+      # Required even on Postgres: n8n keeps its settings file and, in
+      # `filesystem` binary mode, its binary payloads here. It is part of the
+      # backup set for exactly that reason.
+      - /var/lib/n8n/data:/home/node/.n8n
+      # Acceptance and soak scripts run INSIDE this container -- they need a
+      # session cookie, and the image's BusyBox wget cannot hold one, so they
+      # are Node. Read-only: they are probes, not part of the application.
+      - /opt/n8n-scripts:/opt/n8n-scripts:ro
+    healthcheck:
+      # /healthz is a LIVENESS probe: it returns 200 as soon as the process is
+      # listening, while the database connection is still initialising and
+      # every API call answers
+      #   503 {"code":503,"message":"Database is not ready!"}
+      # /healthz/readiness is the one that gates on the database. Using
+      # liveness here marks n8n healthy early, and caddy and n8n-runners --
+      # which both `depends_on: service_healthy` -- then start against an
+      # instance that cannot serve a request yet.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:5678/healthz/readiness || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "5"}
+
+  n8n-runners:
+    # Version must equal the n8n image exactly -- upstream requires it, and a
+    # mismatch is a broker/runner protocol mismatch that surfaces when a Code
+    # node first executes, long after the converge reported success. The
+    # validator refuses a mismatched pair.
+    image: docker.io/n8nio/runners:2.36.9@sha256:99811ba57933dd77895f5fedbb555ce105bac8a82812205f6396d52a30b32e66
+    restart: unless-stopped
+    depends_on:
+      n8n:
+        condition: service_healthy
+    env_file: [/etc/n8n/host.env]
+    environment:
+      N8N_RUNNERS_TASK_BROKER_URI: "http://n8n:5679"
+      N8N_RUNNERS_AUTO_SHUTDOWN_TIMEOUT: "15"
+      GENERIC_TIMEZONE: Europe/Amsterdam
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "5"}
+
+  caddy:
+    image: docker.io/library/caddy:2.11.4@sha256:df7f1c2fb114453b951de51a98efc010db1655a92c2e86be6706714e2417a78d
+    restart: unless-stopped
+    # The only service in the merged project that publishes beyond loopback.
+    # Every Neon port stays on 127.0.0.1, and the runner broker is reachable
+    # only on the project network.
+    ports: ["80:80", "443:443"]
+    depends_on:
+      n8n:
+        condition: service_healthy
+    volumes:
+      - /etc/n8n/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "5"}
+
+volumes:
+  caddy-data:
+  caddy-config:

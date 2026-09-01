@@ -1,0 +1,19 @@
+# Delete. Brings the merged project down through the SAME canonical Compose
+# invocation every other lifecycle verb uses: chdir /opt/neon, no -f flags, so
+# compose.yml and compose.override.yml are both in scope. A `down` that saw only
+# one of the two files would leave half the stack running on a host about to be
+# destroyed.
+- name: Stop the n8n and Neon stack
+  hosts: n8n
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Stop the timers
+      ansible.builtin.systemd_service: {name: "{{ item }}", state: stopped, enabled: false}
+      loop: [n8n-backup.timer, n8n-monitor.timer]
+      failed_when: false
+
+    - name: Bring the merged project down
+      ansible.builtin.command: docker compose down
+      args: {chdir: /opt/neon}
+      failed_when: false

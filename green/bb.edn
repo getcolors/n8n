@@ -1,0 +1,14 @@
+{:paths ["test/clj" "test/resources"]
+ :deps {io.github.getcolors/n8n {:local/root "."}}
+ :tasks
+ {test {:requires ([clojure.test :as t]
+                   [io.github.getcolors.n8n.validate-test]
+                   [io.github.getcolors.n8n.tools-test])
+        :task (let [{:keys [fail error]}
+                    (t/run-tests 'io.github.getcolors.n8n.validate-test
+                                 'io.github.getcolors.n8n.tools-test)]
+                (System/exit (if (pos? (+ fail error)) 1 0)))}
+  syntax {:task (shell "../scripts/syntax.sh")}
+  golden {:task (shell "../scripts/golden.sh")}
+  golden:accept {:task (shell "../scripts/golden.sh" "--accept")}
+  pin {:task (load-file "tasks/pin.clj")}}}

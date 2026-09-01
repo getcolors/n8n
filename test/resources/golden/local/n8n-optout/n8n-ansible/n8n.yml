@@ -1,0 +1,367 @@
+# n8n on top of the converged Neon storage tier.
+#
+# Everything this play needs from the storage tier already exists when it runs:
+# the compute node is healthy, the application role exists, and its password is
+# at /etc/neon/secrets/neon_role_password. This play does not re-create any of
+# that -- see the comment on DB_POSTGRESDB_PASSWORD in the Compose overlay.
+- name: Install n8n on the Neon stack
+  hosts: n8n
+  become: true
+  gather_facts: true
+  handlers:
+    # Named for the merged project, not for a file. Every Compose command in
+    # this package and in the imported Neon play runs with chdir /opt/neon and
+    # no -f flags, so all of them act on the one project that compose.yml and
+    # compose.override.yml define together.
+    - name: Bring up the application tier
+      ansible.builtin.command: docker compose up -d
+      args: {chdir: /opt/neon}
+
+    - name: Reload Caddy
+      ansible.builtin.command: docker compose restart caddy
+      args: {chdir: /opt/neon}
+
+    - name: Reload systemd
+      ansible.builtin.systemd_service: {daemon_reload: true}
+
+    - name: Restart sshd
+      ansible.builtin.service: {name: ssh, state: restarted}
+
+  tasks:
+    - name: Create the n8n directories
+      ansible.builtin.file: {path: "{{ item.path }}", state: directory, mode: "{{ item.mode }}"}
+      loop:
+        - {path: /etc/n8n, mode: "0755"}
+        - {path: /etc/n8n/secrets, mode: "0700"}
+        - {path: "/var/backups/n8n", mode: "0700"}
+
+    # n8n runs as uid 1000 (`node`) in its image, and this directory holds the
+    # settings file whose permissions N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS
+    # tightens to 0600. Root-owned, it fails that enforcement at boot.
+    - name: Create the n8n data directory owned by the container user
+      ansible.builtin.file:
+        path: "/var/lib/n8n/data"
+        state: directory
+        owner: "1000"
+        group: "1000"
+        mode: "0750"
+
+    # Two secrets, generated once on the server and never supplied by the
+    # operator -- the same doctrine the Neon play uses for role passwords. The
+    # encryption key is deliberately NOT one of them: it has to outlive this
+    # host, so it is the operator's to hold and escrow.
+    - name: Generate the task runner auth token
+      ansible.builtin.shell: |
+        set -euo pipefail
+        umask 077
+        openssl rand -hex 32 > /etc/n8n/secrets/runner-token
+      args: {creates: /etc/n8n/secrets/runner-token, executable: /bin/bash}
+
+    - name: Generate the owner account password
+      ansible.builtin.shell: |
+        set -euo pipefail
+        umask 077
+        # n8n requires a digit and a capital in the owner password, and rejects
+        # the account creation with a validation error if either is missing --
+        # a base64 blob satisfies neither reliably.
+        printf 'Aa1%s\n' "$(openssl rand -base64 24 | tr -d '/+=')" \
+          > /etc/n8n/secrets/owner-password
+      args: {creates: /etc/n8n/secrets/owner-password, executable: /bin/bash}
+
+    - name: Refuse to continue on an empty generated secret
+      ansible.builtin.shell: |
+        set -euo pipefail
+        for f in runner-token owner-password; do
+          [ -s "/etc/n8n/secrets/$f" ] || { echo "empty /etc/n8n/secrets/$f" >&2; exit 1; }
+        done
+        [ -s /etc/neon/secrets/neon_role_password ] \
+          || { echo "the Neon play did not leave a role password" >&2; exit 1; }
+      args: {executable: /bin/bash}
+      changed_when: false
+
+    - name: Refuse to continue without an encryption key
+      ansible.builtin.assert:
+        that:
+          - "lookup('env','COLORS_PAR_N8N_ENCRYPTION_KEY') | length >= 32"
+        fail_msg: >-
+          COLORS_PAR_N8N_ENCRYPTION_KEY must be at least 32 characters. n8n
+          generates a random key when this is unset, which makes the key a
+          property of this disk rather than of the operator, and a restore onto
+          a fresh host then cannot decrypt anything it restored.
+
+    # Written ON THE HOST, because the values live there: the role password is
+    # neon's create-once secret and the runner token is this play's. An Ansible
+    # lookup could not read either -- lookups execute on the controller.
+    - name: Install the host-side application environment
+      ansible.builtin.shell: |
+        set -euo pipefail
+        umask 077
+        {
+          printf 'DB_POSTGRESDB_PASSWORD=%s\n' "$(cat /etc/neon/secrets/neon_role_password)"
+          printf 'N8N_RUNNERS_AUTH_TOKEN=%s\n' "$(cat /etc/n8n/secrets/runner-token)"
+        } > /etc/n8n/host.env.next
+        if cmp -s /etc/n8n/host.env.next /etc/n8n/host.env 2>/dev/null; then
+          rm -f /etc/n8n/host.env.next; echo unchanged
+        else
+          mv /etc/n8n/host.env.next /etc/n8n/host.env; echo updated
+        fi
+      args: {executable: /bin/bash}
+      register: n8n_hostenv
+      changed_when: "'updated' in n8n_hostenv.stdout"
+      no_log: true
+      notify: Bring up the application tier
+
+    # The operator's key, from the controller's environment. `content:` IS
+    # templated (module arguments are), unlike a `src:` file copy -- and this
+    # value legitimately comes from the controller, so a lookup is right here.
+    # It reaches the host and nowhere else: not .colors/, not a golden, not git.
+    - name: Install the operator environment
+      ansible.builtin.copy:
+        dest: /etc/n8n/operator.env
+        mode: "0600"
+        content: |
+          N8N_ENCRYPTION_KEY={{ lookup('env','COLORS_PAR_N8N_ENCRYPTION_KEY') }}
+      no_log: true
+      notify: Bring up the application tier
+
+    - name: Refuse to converge on an empty application environment
+      ansible.builtin.shell: |
+        set -euo pipefail
+        for kv in DB_POSTGRESDB_PASSWORD N8N_RUNNERS_AUTH_TOKEN; do
+          grep -q "^${kv}=..*" /etc/n8n/host.env || { echo "empty $kv" >&2; exit 1; }
+        done
+        grep -q '^N8N_ENCRYPTION_KEY=..*' /etc/n8n/operator.env \
+          || { echo "empty N8N_ENCRYPTION_KEY" >&2; exit 1; }
+        # An unrendered template expression in an env file makes the container
+        # authenticate with that literal string, and the database then reports a
+        # password failure -- which sends you debugging the database.
+        #
+        # The pattern is built with printf octal escapes so that the two
+        # opening brace characters never appear literally in this task. Ansible
+        # splits arguments before running anything and counts brace pairs across
+        # the whole block, comments included; an unbalanced pair there fails the
+        # playbook at load time with "failed at splitting arguments, either an
+        # unbalanced jinja2 block or quotes", naming the task rather than the
+        # character. A character class does not help -- it is unbalanced too.
+        pat=$(printf '\173\173')
+        grep -q "$pat" /etc/n8n/host.env /etc/n8n/operator.env \
+          && { echo "unrendered template expression in an env file" >&2; exit 1; }
+        exit 0
+      args: {executable: /bin/bash}
+      changed_when: false
+
+    # n8n writes N8N_ENCRYPTION_KEY into /home/node/.n8n/config on FIRST boot
+    # and thereafter refuses to start if the env var differs, with
+    #   "Mismatching encryption keys. The encryption key in the settings file
+    #    /home/node/.n8n/config does not match the N8N_ENCRYPTION_KEY env var."
+    # So one bad first boot -- a wrong key, or an unrendered template expression
+    # that reached the container as a literal string -- poisons the data
+    # directory permanently.
+    #
+    # This deliberately does NOT self-heal. Deleting the settings file is
+    # correct only when the database holds no encrypted credentials; when it
+    # does, the file is the only thing that can decrypt them and removing it
+    # destroys them silently. Fail loudly and let a human decide.
+    - name: Refuse to converge on a mismatched encryption key
+      ansible.builtin.shell: |
+        set -euo pipefail
+        cfg=/var/lib/n8n/data/config
+        [ -f "$cfg" ] || { echo "first boot"; exit 0; }
+        want=$(sed -n 's/^N8N_ENCRYPTION_KEY=//p' /etc/n8n/operator.env)
+        have=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('encryptionKey',''))" "$cfg" 2>/dev/null || echo "")
+        [ "$want" = "$have" ] && { echo match; exit 0; }
+        cat >&2 <<'MSG'
+        The settings file holds an encryption key that does not match
+        COLORS_PAR_N8N_ENCRYPTION_KEY. n8n will refuse to start.
+
+        If the database holds encrypted credentials, the settings file is the
+        only thing that can decrypt them: restore the ORIGINAL key instead of
+        deleting anything.
+
+        If this instance never stored a credential -- typically a failed first
+        boot -- remove the settings file and re-converge:
+          ssh <profile> "rm -f DATA_DIR/config" && ./green create
+        MSG
+        exit 1
+      args: {executable: /bin/bash}
+      register: n8n_keycheck
+      changed_when: false
+
+    - name: Install the Caddy configuration
+      ansible.builtin.copy: {src: Caddyfile, dest: /etc/n8n/Caddyfile, mode: "0644"}
+      notify: Reload Caddy
+
+    # Installed BESIDE the Neon play's compose.yml, never passed with -f. This
+    # is what makes every unchanged Neon command -- and this package's own --
+    # operate on one merged project.
+    - name: Install the application tier overlay
+      ansible.builtin.copy:
+        src: compose.override.yml
+        dest: /opt/neon/compose.override.yml
+        mode: "0644"
+      notify: Bring up the application tier
+
+    # n8n's N8N_RESTRICT_FILE_ACCESS_TO points here. Absent, file-writing nodes
+    # fail in a way that reads like a permissions bug in the workflow.
+    - name: Create the permitted file-access directory
+      ansible.builtin.file:
+        path: /home/node/.n8n-files
+        state: directory
+        owner: "1000"
+        group: "1000"
+        mode: "0750"
+
+    - name: Install the operational scripts
+      ansible.builtin.copy: {src: "{{ item }}", dest: "/opt/neon/{{ item }}", mode: "0755"}
+      loop: [n8n-env.sh, n8n-backup.sh, n8n-restore.sh, n8n-monitor.sh, n8n-soak.sh,
+             n8n-smoke.sh, n8n-claim-owner.sh, n8n-rehearsal.sh, n8n-prune-drill.sh,
+             n8n-restart-drill.sh]
+
+    # Into a directory the n8n container mounts, NOT /opt/neon. An earlier
+    # version installed these host-side and invoked `node /opt/soak.js` inside
+    # the container, where that path does not exist.
+    - name: Create the in-container script directory
+      ansible.builtin.file: {path: /opt/n8n-scripts, state: directory, mode: "0755"}
+
+    - name: Install the in-container Node probes
+      ansible.builtin.copy: {src: "{{ item }}", dest: "/opt/n8n-scripts/{{ item }}", mode: "0644"}
+      loop: [soak.js, acceptance.js, rehearsal.js]
+      notify: Bring up the application tier
+
+    # SSH is open to the internet by workspace convention, so these negative
+    # controls are the entire mitigation. Ubuntu's default sshd config already
+    # disables password auth on a key-provisioned image, but "already disabled
+    # by whoever built the image" is not a control -- it is a coincidence that
+    # holds until an image changes. Set explicitly; gate B8 asserts the result.
+    - name: Harden sshd
+      ansible.builtin.copy:
+        dest: /etc/ssh/sshd_config.d/10-colors-n8n.conf
+        mode: "0644"
+        content: |
+          PasswordAuthentication no
+          PermitRootLogin prohibit-password
+          KbdInteractiveAuthentication no
+      notify: Restart sshd
+
+    # Bring the stack up now rather than waiting for the end-of-play handler
+    # flush: everything below this line talks to a running n8n.
+    - name: Converge the merged stack
+      ansible.builtin.meta: flush_handlers
+
+    # Handlers fire only when a file changed. A converge that changes nothing
+    # would then never reconcile container STATE -- which is exactly how caddy
+    # and n8n-runners sat in `created` across a run that reported success:
+    # an earlier converge had failed their health dependency, and no later run
+    # had any file change to notify the handler with.
+    #
+    # Desired state must be enforced every run, not only when an input moved.
+    # `up -d` is idempotent; on a converged host it is a no-op.
+    - name: Enforce the running state of the whole stack
+      ansible.builtin.command: docker compose up -d
+      args: {chdir: /opt/neon}
+      register: n8n_upd
+      changed_when: "'Started' in n8n_upd.stderr or 'Recreated' in n8n_upd.stderr"
+      retries: 3
+      delay: 20
+      until: n8n_upd is succeeded
+
+    - name: Assert the merged Compose project is what we think it is
+      ansible.builtin.shell: |
+        set -euo pipefail
+        cfg=$(docker compose config --format json)
+        python3 - "$cfg" <<'PY'
+        import json, sys
+        c = json.loads(sys.argv[1])
+        svc = set(c.get("services", {}))
+        want = {"storage_broker","pageserver","safekeeper","compute","n8n","n8n-runners","caddy"}
+        missing = want - svc
+        assert not missing, f"missing services in merged project: {sorted(missing)}"
+        assert c.get("name") == "neon", f"merged project name is {c.get('name')!r}, expected 'neon'"
+        # Nothing but Caddy may publish beyond loopback. A Neon port or the
+        # runner broker reachable from the internet would be a silent
+        # regression that no functional test would notice.
+        for name, s in c["services"].items():
+            for p in s.get("ports", []) or []:
+                host_ip = p.get("host_ip") if isinstance(p, dict) else None
+                published = str(p.get("published")) if isinstance(p, dict) else str(p)
+                if name == "caddy":
+                    continue
+                assert host_ip in ("127.0.0.1", "::1"), \
+                    f"{name} publishes {published} on {host_ip!r}, expected loopback only"
+        print("merged compose project ok:", len(svc), "services")
+        PY
+      args: {chdir: /opt/neon, executable: /bin/bash}
+      changed_when: false
+
+    # The window this closes: n8n's first-run setup screen is unauthenticated,
+    # so between the moment Caddy serves the public name and the moment an owner
+    # exists, anyone who finds the host owns the instance and every credential
+    # it will ever store. Claimed over the project network, and reconciling --
+    # an already-claimed instance is success, not an error.
+    - name: Claim the owner account
+      ansible.builtin.command:
+        argv: [/opt/neon/n8n-claim-owner.sh, "operator@example.com", "5678"]
+      register: n8n_owner
+      changed_when: "'created' in n8n_owner.stdout"
+
+    # The gates. Installing a smoke script and never invoking it is how a
+    # converge reports success while proving nothing -- which is exactly what
+    # happened on the first green run of this package: EXIT=0, and not one
+    # application gate had executed. The acceptance step on the operator side
+    # checks the client path only; everything about n8n itself is checked here.
+    - name: Run the n8n acceptance gates
+      ansible.builtin.command: /opt/neon/n8n-smoke.sh
+      register: n8n_smoke
+      changed_when: false
+
+    - name: Show the gate results
+      ansible.builtin.debug:
+        msg: "{{ n8n_smoke.stdout_lines }}"
+
+    - name: Install the backup timer
+      ansible.builtin.copy:
+        dest: "/etc/systemd/system/{{ item.name }}"
+        mode: "0644"
+        content: "{{ item.content }}"
+      loop:
+        - name: n8n-backup.service
+          content: |
+            [Unit]
+            Description=n8n backup set (logical dump + data directory + manifest)
+            [Service]
+            Type=oneshot
+            ExecStart=/opt/neon/n8n-backup.sh
+        - name: n8n-backup.timer
+          content: |
+            [Unit]
+            Description=n8n backup set
+            [Timer]
+            OnCalendar=*-*-* 00/6:00:00
+            Persistent=true
+            [Install]
+            WantedBy=timers.target
+        - name: n8n-monitor.service
+          content: |
+            [Unit]
+            Description=n8n health check and dead-man heartbeat
+            [Service]
+            Type=oneshot
+            ExecStart=/opt/neon/n8n-monitor.sh
+        - name: n8n-monitor.timer
+          content: |
+            [Unit]
+            Description=n8n health check
+            [Timer]
+            OnCalendar=*:0/15
+            Persistent=true
+            [Install]
+            WantedBy=timers.target
+      notify: Reload systemd
+
+    - name: Enable the timers
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+        daemon_reload: true
+      loop: [n8n-backup.timer, n8n-monitor.timer]
