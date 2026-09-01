@@ -1,0 +1,54 @@
+{
+    servers {
+        # Cloudflare's published ranges. Caddy needs these to read the real
+        # client address out of X-Forwarded-For instead of recording every
+        # request as coming from the edge. This list is only trustworthy
+        # because the Vultr firewall admits nothing else on 80/443 -- trusting
+        # a header from an open origin is trusting the header's author.
+        trusted_proxies static 173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32
+    }
+}
+
+# Anything arriving with a Host this server does not serve is refused before it
+# reaches n8n. Belt to the firewall's braces: it closes the case where a request
+# reaches the origin with a forged or absent Host, and it means a scan of the
+# origin address gets a closed connection rather than a login page.
+:80, :443 {
+    abort
+}
+
+<{ n8n-host }> {
+    encode zstd gzip
+
+    # Webhook payloads are the point of this service and are not small. The
+    # default would silently truncate a large third-party POST into a workflow
+    # that appears to run and processes nothing.
+    request_body max_size 32MB
+
+    log {
+        output stdout
+        format json
+    }
+
+    # n8n serves the editor, the REST API and every webhook endpoint from one
+    # port. There is nothing to split here -- splitting it is what queue mode
+    # and webhook processors are for, and neither is in scope on one host.
+    reverse_proxy n8n:<{ n8n-port }> {
+        # Workflow executions are not request-shaped: a webhook that drives a
+        # long chain of HTTP nodes can legitimately take minutes, and Caddy's
+        # default would cut the response while the execution kept running --
+        # producing a timeout for the caller and a successful execution in the
+        # log, which is the worst possible pair to debug.
+        transport http {
+            read_timeout 300s
+            write_timeout 300s
+        }
+    }
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        -Server
+    }
+}

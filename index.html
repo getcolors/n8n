@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="description" content="Provision self-hosted Neon — serverless Postgres with storage/compute separation, its layers and WAL in Cloudflare R2 — on one loopback-only Vultr instance reached over an SSH tunnel.">
+  <meta name="description" content="Provision self-hosted n8n workflow automation on one Vultr instance, backed by a colocated self-hosted Neon whose layers and WAL live in Cloudflare R2, behind Caddy TLS with Code nodes in an external task runner.">
   <title>n8n Package Skill — getcolors</title>
   <style>
     :root{color-scheme:light;--ink:#1f2328;--muted:#59636e;--line:#d0d7de;--soft:#f6f8fa;--blue:#0969da;--green:#1a7f37;--warn:#9a6700}*{box-sizing:border-box}body{margin:0;color:var(--ink);font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:920px;margin:auto;padding:64px 28px 100px}h1{font-size:52px;line-height:1.05;margin:0}h2{margin-top:54px;padding-bottom:8px;border-bottom:1px solid var(--line)}h3{margin-top:30px}.lead{font-size:20px;color:var(--muted);max-width:790px}code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}pre{padding:18px;overflow:auto;border:1px solid var(--line);border-radius:8px;background:var(--soft)}:not(pre)>code{padding:.12em .35em;border-radius:5px;background:var(--soft)}a{color:var(--blue)}.eyebrow{color:var(--green);font-weight:700;letter-spacing:.08em}.callout{padding:16px 18px;border-left:4px solid var(--green);background:#dafbe1}.warning{border-color:var(--warn);background:#fff8c5}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.card{padding:18px;border:1px solid var(--line);border-radius:8px}.card h3{margin-top:0}table{width:100%;border-collapse:collapse;margin-top:16px}th,td{padding:8px 10px;border:1px solid var(--line);text-align:left;vertical-align:top}th{background:var(--soft)}@media(max-width:650px){main{padding-top:38px}.grid{grid-template-columns:1fr}h1{font-size:40px}}
@@ -13,11 +13,21 @@
 <script src="https://rybbit.getcolors.ai/api/script.js" data-site-id="9fb9c41a6d49" defer></script>
 </head>
 <body><main>
-  <p class="eyebrow">GREEN · RED · BLUE PACKAGE SKILL · VULTR · NEON</p>
+  <p class="eyebrow">GREEN · RED · BLUE PACKAGE SKILL · VULTR · NEON · CADDY</p>
   <h1>n8n Package Skill</h1>
-  <p class="lead">A reproducible Green, Red, and Blue workflow for self-hosted Neon — serverless Postgres with storage and compute separated, its layers and WAL durably in Cloudflare R2 — on one guarded, loopback-only Vultr instance.</p>
+  <p class="lead">A reproducible Green, Red, and Blue workflow for self-hosted n8n on one Vultr instance — behind Caddy TLS, with Code nodes isolated in an external task runner, and its database a colocated self-hosted Neon whose layers and WAL live in Cloudflare R2.</p>
 
-  <div class="callout"><strong>The R2 prefix is the database.</strong> The pageserver uploads layers and the safekeeper offloads WAL to <code>&lt;profile&gt;/data/</code> in R2, and the tenant and timeline identities live in <code>colors.yml</code> — so a rebuilt host re-attaches the same identities and rehydrates from R2. Two-phase ownership markers make sure convergence never attaches a foreign or half-initialized prefix.</div>
+  <div class="callout"><strong>The database's durable copy is object storage.</strong> n8n is normally run on SQLite — fine until two workflows finish at once — or on a colocated Postgres whose durability is the instance's disk. Here the storage tier is Neon: the pageserver uploads layers and the safekeeper offloads WAL to <code>&lt;profile&gt;/data/</code> in R2, and the tenant and timeline identities live in <code>colors.yml</code>, so a rebuilt host re-attaches the same identities.</div>
+
+  <h2>The interesting claim, and the measurement</h2>
+  <p>Storage/compute separation is usually assumed too slow for an OLTP write pattern, and n8n writes an execution row per run. Measured on a <code>vhp-8c-16gb-amd</code> with a declared workload mix — API-shaped calls, Code nodes at 8&nbsp;MB to trigger n8n's payload duplication, and binary payloads through the filesystem path:</p>
+  <table>
+    <tr><th>Measure</th><th>Result</th><th>Gate</th></tr>
+    <tr><td>executions in 5 minutes</td><td><strong>7950</strong>, 0 failed</td><td>≥ 500</td></tr>
+    <tr><td>SQL round-trip p95 / p99</td><td><strong>75 ms / 80 ms</strong></td><td>150 / 500</td></tr>
+    <tr><td>host memory / disk</td><td>12% / 9%</td><td>≤ 85% / 80%</td></tr>
+  </table>
+  <p>Reproduced across two independent runs with identical percentiles. The p95→p99 gap of 5&nbsp;ms is the point: the split adds no visible tail latency at this rate. Honest scope: five minutes, one host, ten concurrent workflows. It does not establish behaviour over days, or during a pageserver restart under load.</p>
 
   <h2>Quick start</h2>
   <pre><code>npx skills add getcolors/n8n
@@ -25,44 +35,61 @@ cp .agents/skills/package-n8n-green/green ./green
 chmod +x green
 ./green build
 ./green create --dry-run</code></pre>
-<p>Equivalent Red and Blue skills ship <code>red</code> and <code>blue</code> launchers.</p>
+  <p>Three implementations of one model — Clojure/Babashka, TypeScript/Bun, Python/uv — take the same verbs and the same <code>colors.yml</code>. Swap <code>package-n8n-green/green</code> for <code>package-n8n-red/red</code> or <code>package-n8n-blue/blue</code>; <code>scripts/parity.sh</code> renders every fixture through all three and diffs the trees byte for byte, so "the same" is a checked claim rather than an intention.</p>
   <p>Build renders reproducible output and dry-run walks the workflow without provider side effects. Real creation and deletion require explicit authorization.</p>
 
   <h2>Architecture</h2>
   <div class="grid">
-    <div class="card"><h3>Compute</h3><p>One Vultr instance and a firewall opening 22 — the only open port. In keygen mode the account SSH key resource is named after the profile and lives in this deployment's state.</p></div>
-    <div class="card"><h3>Storage tier</h3><p>Docker Compose: the storage broker, the pageserver, and one safekeeper, every image pinned by tag <em>and</em> digest, all bound to loopback, all writing to R2 under the deployment's own prefix.</p></div>
-    <div class="card"><h3>Compute node</h3><p>Postgres under <code>compute_ctl</code>, its roles provisioned from a spec whose SCRAM verifiers are generated on the host — recreate-only by doctrine, disposable by design.</p></div>
-    <div class="card"><h3>Acceptance</h3><p>Server-side: the SQL round-trip, three auth refusals, and R2 object evidence. Workstation-side: the SSH tunnel through the generated alias, with and without the password.</p></div>
+    <div class="card"><h3>Compute</h3><p>One Vultr instance and a firewall opening 22, 80 and 443 — and 80/443 only to Cloudflare's published ranges. In keygen mode the account SSH key resource is named after the profile and lives in this deployment's state.</p></div>
+    <div class="card"><h3>Application tier</h3><p>n8n 2.36.9 behind Caddy, with an external task runner so a Code node executes in its own container rather than in the main process. Every image pinned by tag <em>and</em> digest, and the runner's version must equal n8n's.</p></div>
+    <div class="card"><h3>Storage tier</h3><p>The storage broker, the pageserver, one safekeeper, and a Postgres 17 compute node under <code>compute_ctl</code> — all bound to loopback, all writing to R2 under the deployment's own prefix.</p></div>
+    <div class="card"><h3>Acceptance</h3><p>Server-side: the tenant attached, fresh WAL in R2, a workflow read back out of Neon, a Code node executed on the runner, the origin certificate, sshd's negative controls. Workstation-side: the SSH tunnel through the generated alias.</p></div>
   </div>
 
-  <h2>Connecting</h2>
-  <p>There is no DNS record and no public database port — the supported client path is the tunnel:</p>
-  <pre><code>ssh -L 55433:127.0.0.1:55433 &lt;profile&gt;
-psql 'postgresql://neon@127.0.0.1:55433/neondb'</code></pre>
-  <p>The role's password is generated on the server (<code>ssh &lt;profile&gt; cat /etc/neon/secrets/neon_role_password</code>); <code>neon-status</code> summarizes the deployment and <code>neon-rotate</code> rotates the password atomically, with rollback.</p>
-
-  <h2>The machine keypair</h2>
-  <p>The deployment owns its SSH key, following the workspace SSH Keypair Standard. Leave <code>vultr-ssh-keys</code> out of <code>colors.yml</code> and the first real <code>create</code> generates <code>~/.ssh/&lt;profile&gt;</code>, registers it at Vultr under the profile name, and a successful <code>delete</code> removes it last — never before.</p>
-
-  <div class="callout warning"><strong>The key lives outside the checkout.</strong> Cloning a deployment repository does not carry machine access with it; copy <code>~/.ssh/&lt;profile&gt;</code> deliberately. A key with no state is never overwritten, and a Vultr key named after the profile that this deployment's state does not own stops the run — if its fingerprint is not yours, do not delete it.</div>
-
-  <p>Supplying <code>vultr-ssh-keys</code> opts out entirely: the package then generates, validates and deletes no key material. Rotation is a rebuild, because Vultr key lists are ForceNew.</p>
-
-  <h2>The SSH config block</h2>
-  <p>Convergence also writes one <code>~/.ssh/config</code> block, following the workspace SSH Config Standard, so <code>ssh &lt;profile&gt;</code> reaches the host with no address, user or <code>-i</code> flag — and the acceptance step rides exactly that alias, so the block is proven, not assumed. Delete removes the block before destroying the instance, the reverse of the keypair: a block that outlives its host is stale but harmless, while a key removed early locks you out of a machine that still exists.</p>
+  <h2>No second copy of the storage tier</h2>
+  <p>The Neon tier is not reimplemented here. This package SHA-pins <a href="https://github.com/getcolors/neon">getcolors/neon</a> and renders its Ansible templates straight out of it — <code>compose.yml</code>, <code>main.yml</code>, <code>pageserver.toml</code>, the compute spec, the bootstrap and rotation scripts — with no file copied into this repository. Each colour reaches the same templates its own way: green off the classpath, red out of the installed package's <code>red/resources</code>, blue out of <code>package_neon_blue/resources</code>.</p>
+  <p>Two mechanics make it work. n8n's own services arrive as a Compose <strong>override</strong> installed beside the upstream <code>compose.yml</code>, so every unchanged upstream command operates on the one merged project without any <code>-f</code> flags. And the imported play targets <code>hosts: neon</code> while this package's targets <code>hosts: n8n</code>, with the single host in both inventory groups.</p>
+  <p>The trade is real coupling: bumping the <code>neon</code> pin can break this package. That is deliberate — the golden renders the merged tree, so a pin bump shows up as a reviewable diff instead of a surprise on a host.</p>
 
   <h2>Exposure</h2>
   <table>
     <tr><th>Port</th><th>Exposure</th><th>Purpose</th></tr>
     <tr><td>22</td><td><code>vultr-ssh-sources</code></td><td>Key-only SSH: convergence, recovery, and the client tunnel</td></tr>
+    <tr><td>80 / 443</td><td><code>vultr-http-sources</code>, by default Cloudflare's ranges alone</td><td>Caddy: the editor, the REST API, and every webhook endpoint</td></tr>
     <tr><td>55433 / 3080</td><td>loopback</td><td>Postgres and the compute API, reached through the tunnel</td></tr>
-    <tr><td>9898 / 6400</td><td>loopback</td><td>Pageserver HTTP and page service</td></tr>
-    <tr><td>7676 / 5454 / 50051</td><td>loopback</td><td>Safekeeper and the storage broker</td></tr>
+    <tr><td>9898 / 6400 / 7676 / 5454 / 50051</td><td>loopback</td><td>Pageserver, safekeeper, and the storage broker</td></tr>
   </table>
+  <p>Caddy is the only service in the merged project that publishes beyond loopback, and it <code>abort</code>s any request whose <code>Host</code> it does not serve — so a scan of the origin address gets a closed connection rather than a login page. Its <code>trusted_proxies</code> list is only trustworthy <em>because</em> the firewall admits nothing else on 80/443: trusting <code>X-Forwarded-For</code> from an open origin is trusting the header's author.</p>
 
-  <h2>Durability, honestly</h2>
-  <p>Layers and WAL survive the host in R2, with an honest bound: commit acknowledgement requires the host's disk, uploads are asynchronous, and a fresh safekeeper cannot serve offloaded WAL back — so a full host loss recovers what the pageserver had uploaded, and the single-node RPO is the activity since its last checkpoint upload. A wiped storage tier on a surviving host loses nothing; both cases were rehearsed against the live deployment. Never configure R2 lifecycle rules on the bucket; they would delete live layers and WAL.</p>
+  <div class="callout warning"><strong>Restricting the origin to Cloudflare and leaving the record unproxied are mutually exclusive.</strong> Caddy answers the ACME HTTP-01 challenge on :80, and with the record unproxied that challenge arrives from Let's Encrypt's own addresses, which the firewall drops. The converge still succeeds and the first HTTPS request finds a certificate that was never issued — so validation refuses the combination up front.</div>
+
+  <h2>Three buckets, three credentials</h2>
+  <p>The package refuses to converge when one R2 credential would reach OpenTofu state, live Neon data and backups alike. Measured on a live host, that pair could list, write and <strong>delete</strong> in the state bucket and delete backup sets — and a backup a compromised host can erase is not a backup. Mint bucket-scoped tokens for <code>COLORS_PAR_NEON_R2_*</code> and <code>COLORS_PAR_N8N_BACKUP_R2_*</code>; <code>COLORS_PAR_R2_*</code> then has one job and never leaves your workstation. A first converge that predates those tokens can set <code>r2-credential-sharing: shared-accepted</code> — but only as a deliberate line in committed desired state, visible in a diff.</p>
+  <p>The database role password, the n8n owner password and the task-runner token are <strong>generated on the server</strong> and are not operator credentials; read them over SSH from <code>/etc/neon/secrets/</code> and <code>/etc/n8n/secrets/</code>.</p>
+
+  <div class="callout warning"><strong>The encryption key outlives the host.</strong> <code>N8N_ENCRYPTION_KEY</code> encrypts every credential n8n stores. n8n writes it into <code>/home/node/.n8n/config</code> on <em>first boot</em> and refuses to start ever after if the environment disagrees — so one bad first boot poisons the data directory, and the error appears on the <em>next</em> boot rather than the one that caused it. Keep a copy somewhere that is not this machine before the first converge.</div>
+
+  <h2>The machine keypair and the SSH config block</h2>
+  <p>The deployment owns its SSH key, following the workspace SSH Keypair Standard. Leave <code>vultr-ssh-keys</code> out of <code>colors.yml</code> and the first real <code>create</code> generates <code>~/.ssh/&lt;profile&gt;</code>, registers it at Vultr under the profile name, and a successful <code>delete</code> removes it last — never before. Supplying <code>vultr-ssh-keys</code> opts out entirely.</p>
+  <p>Convergence also writes one <code>~/.ssh/config</code> block, following the workspace SSH Config Standard, so <code>ssh &lt;profile&gt;</code> reaches the host with no address, user or <code>-i</code> flag — and the acceptance step rides exactly that alias, so the block is proven, not assumed. Delete removes the block before destroying the instance, the reverse of the keypair: a block that outlives its host is stale but harmless, while a key removed early locks you out of a machine that still exists.</p>
+
+  <h2>Drills</h2>
+  <p>Acceptance runs on every converge and fails it. These do not:</p>
+  <pre><code>ssh &lt;profile&gt; /opt/neon/n8n-smoke.sh          # the acceptance gates on demand
+ssh &lt;profile&gt; /opt/neon/n8n-soak.sh           # load, against the declared thresholds
+ssh &lt;profile&gt; /opt/neon/n8n-rehearsal.sh      # restore into an isolated scratch stack
+ssh &lt;profile&gt; /opt/neon/n8n-prune-drill.sh    # execution retention, isolated
+ssh &lt;profile&gt; /opt/neon/n8n-restart-drill.sh recreate</code></pre>
+
+  <h2>Recovery, honestly</h2>
+  <p>Neon uploads WAL to R2 continuously, but a <strong>rebuilt safekeeper does not recover its offloaded WAL</strong> — the walproposer bootstraps it from the compute basebackup. A destroyed host therefore falls back to the logical backup set, and the backup <em>interval</em> is the real RPO: six hours by default, not nightly.</p>
+  <table>
+    <tr><th>Failure</th><th>Recovers from</th><th>RPO</th></tr>
+    <tr><td>pageserver local state lost</td><td>R2 layers + safekeeper replay</td><td>~0</td></tr>
+    <tr><td>compute lost</td><td>recreate from pageserver</td><td>~0</td></tr>
+    <tr><td><strong>whole host lost</strong></td><td>the backup set in R2</td><td>one backup interval</td></tr>
+  </table>
+  <p><code>n8n-rehearsal.sh</code> proves the whole path: restore both artifacts into an isolated scratch stack, boot the pinned image, log in, and execute a workflow whose node carries a stored credential — because a credential's value cannot be read back to test decryption, only used.</p>
 
   <h2>Safety</h2>
   <ul>

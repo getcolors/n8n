@@ -1,5 +1,6 @@
 #!/usr/bin/env bb
-;; Neon launcher — self-hosted Neon serverless Postgres on one Vultr instance.
+;; n8n launcher — n8n workflow automation on one Vultr instance, backed by a
+;; colocated self-hosted Neon storage tier.
 ;;
 ;; Desired state lives in colors.yml, found by walking up from the working
 ;; directory. Secrets and tokens are never written there: every credential key
@@ -164,7 +165,7 @@
        "[-f|--file colors.yml] [--dry-run]\n"
        "\n"
        "  build     render the work directory only — contact nothing\n"
-       "  create    provision and verify the Neon serverless Postgres server\n"
+       "  create    provision and verify the n8n server and its storage tier\n"
        "  delete    remove the protected deployment"))
 
 (defn run

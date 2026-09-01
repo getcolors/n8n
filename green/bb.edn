@@ -11,4 +11,5 @@
   syntax {:task (shell "../scripts/syntax.sh")}
   golden {:task (shell "../scripts/golden.sh")}
   golden:accept {:task (shell "../scripts/golden.sh" "--accept")}
+  parity {:task (shell "../scripts/parity.sh")}
   pin {:task (load-file "tasks/pin.clj")}}}

@@ -1,7 +1,7 @@
 # n8n
 
-A Package Skill that provisions **n8n workflow automation on one Vultr
-instance, backed by a colocated self-hosted Neon** — storage/compute-separated
+A tri-colour Package Skill (green, red, blue) that provisions **n8n workflow
+automation on one Vultr instance, backed by a colocated self-hosted Neon** — storage/compute-separated
 Postgres whose layers and WAL live in Cloudflare R2 — behind Caddy TLS, with
 n8n's Code nodes isolated in an external task runner.
 
@@ -31,9 +31,12 @@ establish behaviour over days or during a pageserver restart under load.
 
 ## Install
 
+Three implementations of one model — Clojure/Babashka, TypeScript/Bun,
+Python/uv — rendering byte-identical output. Pick one:
+
 ```sh
 npx skills add getcolors/n8n
-cp .agents/skills/package-n8n-green/green ./green
+cp .agents/skills/package-n8n-green/green ./green   # or -red/red, or -blue/blue
 chmod +x green
 ```
 
@@ -49,6 +52,10 @@ The launcher in your project root is a **copy**, not a symlink. After
 ./green delete             # guarded by compute-prevent-destroy
 ```
 
+`./red` and `./blue` take the same verbs and the same `colors.yml`, and
+`scripts/parity.sh` is what makes "the same" a checked claim rather than an
+intention: both fixtures through all three colours, diffed byte for byte.
+
 `colors.yml` is the only file you edit. Exit code 2 lists every validation
 problem at once.
 
@@ -56,9 +63,14 @@ problem at once.
 
 The Neon tier is not reimplemented here. This package SHA-pins
 [`getcolors/neon`](https://github.com/getcolors/neon) as a dependency and
-renders its Ansible templates directly off the classpath — `compose.yml`,
-`main.yml`, `pageserver.toml`, the compute spec, the bootstrap and rotation
-scripts — with no file copied into this repository.
+renders its Ansible templates straight out of it — `compose.yml`, `main.yml`,
+`pageserver.toml`, the compute spec, the bootstrap and rotation scripts — with
+no file copied into this repository.
+
+Each colour reaches the same templates its own way — green off the classpath,
+red out of the installed package's `red/resources`, blue out of
+`package_neon_blue/resources` — and all three pin the same commit, which
+`scripts/launcher.sh` checks.
 
 Two mechanics make that work. n8n's own services arrive as a Compose
 **override** installed beside the upstream `compose.yml`, so every unchanged
@@ -86,10 +98,14 @@ API responses, so reading one back and comparing can never work.
 ## Tests
 
 ```sh
-cd green && bb test        # validator and rendering rules
-./scripts/golden.sh        # both SSH-keypair modes, byte for byte
+cd green && bb test                        # validator and rendering rules
+cd red   && bun test && bun run typecheck
+cd blue  && uv run pytest
+./scripts/golden.sh        # green, both SSH-keypair modes, byte for byte
+./scripts/parity.sh        # three colours, two fixtures, byte for byte
+./scripts/launcher.sh      # the three payloads, and green end to end from a copy
 ./scripts/syntax.sh        # ansible-playbook --syntax-check on the rendered tree
-cd green && bb pin         # stamp the launcher after a push
+cd green && bb pin         # stamp all three launchers after a push
 ```
 
 ## Licence
