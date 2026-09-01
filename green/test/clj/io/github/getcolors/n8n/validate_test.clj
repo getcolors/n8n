@@ -51,6 +51,7 @@
    :n8n-soak-min-executions-completed 500
    :n8n-soak-max-host-memory-percent 85 :n8n-soak-max-disk-percent 80})
 
+(defn errs-state [m] (v/state-errors (merge base m)))
 (defn errs [m] (v/state-errors (merge base m)))
 (defn has? [m needle] (boolean (some #(re-find (re-pattern needle) %) (errs m))))
 
@@ -155,6 +156,29 @@
     (is (= "a" (:access-key-id shared)))
     (is (true? (:split? split)))
     (is (= "c" (:access-key-id split)))))
+
+(deftest sharing-one-r2-credential-must-be-a-deliberate-choice
+  (testing "the package already refuses to let backups share a BUCKET with
+            state or live data; letting them silently share a CREDENTIAL was
+            the same property enforced on one axis and ignored on the other"
+    (let [creds {:vultr-api-key "v" :cloudflare-api-token "c"
+                 :r2-access-key-id "a" :r2-secret-access-key "b"
+                 :n8n-encryption-key (apply str (repeat 32 "k"))}
+          errs #(v/secret-errors (merge base creds %) :create)]
+      (testing "the shared pair alone is refused"
+        (is (some #(re-find #"same R2 credential as OpenTofu state and live" %) (errs {})))
+        (is (some #(re-find #"live Neon data would use the same R2 credential" %) (errs {}))))
+      (testing "scoped pairs satisfy it with no opt-out"
+        (is (empty? (filter #(re-find #"same R2 credential" %)
+                            (errs {:neon-r2-access-key-id "c" :neon-r2-secret-access-key "d"
+                                   :n8n-backup-r2-access-key-id "e"
+                                   :n8n-backup-r2-secret-access-key "f"})))))
+      (testing "the shared pair is reachable only as a recorded, committed choice"
+        (is (empty? (filter #(re-find #"same R2 credential" %)
+                            (errs {:r2-credential-sharing "shared-accepted"})))))
+      (testing "and the opt-out itself is validated"
+        (is (has? {:r2-credential-sharing "yes-whatever"} "must be split or shared-accepted"))
+        (is (empty? (errs-state {:r2-credential-sharing "split"})))))))
 
 (deftest the-backup-scoping-gate-is-conditional
   (testing "making it mandatory would fail every converge on the shared

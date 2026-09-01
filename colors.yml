@@ -31,6 +31,12 @@ provider-compute: vultr
 provider-dns: cloudflare
 provider-backend: r2
 
+# One R2 credential reaching OpenTofu state, live Neon data and backups alike
+# is refused unless this says `shared-accepted`. Leave it at `split` and supply
+# COLORS_PAR_NEON_R2_* and COLORS_PAR_N8N_BACKUP_R2_* scoped to one bucket
+# each: a backup a compromised host can erase is not a backup.
+r2-credential-sharing: split
+
 # Preserve this guard in committed desired state. Destruction requires an
 # explicitly authorized one-run override; never edit this flag to bypass it.
 compute-prevent-destroy: true

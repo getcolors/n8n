@@ -51,10 +51,29 @@ Non-secret desired state lives in `colors.yml`. Every credential is a
 | `COLORS_PAR_CLOUDFLARE_API_TOKEN` | the DNS record; needs Zone:Read + DNS:Edit |
 | `COLORS_PAR_R2_ACCESS_KEY_ID` / `_SECRET_ACCESS_KEY` | OpenTofu state |
 | `COLORS_PAR_NEON_R2_ACCESS_KEY_ID` / `_SECRET_ACCESS_KEY` | Neon layers and WAL (falls back to the pair above) |
-| `COLORS_PAR_N8N_BACKUP_R2_*` | optional, backup-only scope |
+| `COLORS_PAR_N8N_BACKUP_R2_*` | backups, scoped to the backup bucket alone |
 | `COLORS_PAR_N8N_ENCRYPTION_KEY` | **≥32 chars, not regenerable** — see below |
 
 Never export `COLORS_PAR_PROFILE`: it selects the deployment's remote state.
+
+### Three buckets, three credentials
+
+The package refuses to converge when one R2 credential would reach OpenTofu
+state, live Neon data and backups alike. Measured on a live host, that pair
+could list, write and **delete** in the state bucket and delete backup sets —
+and a backup a compromised host can erase is not a backup.
+
+Mint bucket-scoped R2 tokens (Object Read & Write on exactly one bucket each)
+for `COLORS_PAR_NEON_R2_*` and `COLORS_PAR_N8N_BACKUP_R2_*`; `COLORS_PAR_R2_*`
+then has one job, OpenTofu state, and never leaves your workstation. A first
+converge that predates those tokens can set
+`r2-credential-sharing: shared-accepted` — but only as a deliberate line in
+committed desired state, visible in a diff, and the acceptance gate then
+reports `RISK` on every run rather than a quiet skip.
+
+R2 has no write-only mode, so even a scoped backup credential can delete what
+it writes. Bucket versioning or an immutability policy closes that, and is a
+Cloudflare-side setting rather than anything this package can converge.
 
 The database role password, the n8n owner password and the task-runner token are
 **generated on the server** and are not operator credentials; read them over SSH

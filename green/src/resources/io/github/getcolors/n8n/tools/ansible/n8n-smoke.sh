@@ -170,9 +170,12 @@ if [ -n "${COLORS_PAR_N8N_BACKUP_R2_ACCESS_KEY_ID:-}" ]; then
     pass "R2 backup credential is scoped away from live data"
   fi
 else
-  skip "R2 backup credential scoping -- no COLORS_PAR_N8N_BACKUP_R2_* pair configured;
-        one credential currently spans OpenTofu state, live Neon data and backups.
-        Supply a backup-only pair and re-converge to turn this gate on."
+  # Not "skip". A skip reads as "not applicable"; this is a security property
+  # the deployment has explicitly accepted the absence of, and it should say so
+  # every single run.
+  printf '  RISK  %s\n' "R2 credential separation NOT in place -- accepted in desired state.
+        One credential reaches OpenTofu state, live Neon data and backups.
+        Close it: two bucket-scoped R2 tokens, then remove r2-credential-sharing."
 fi
 
 [ "$rc" -eq 0 ] && echo "acceptance: all gates passed" || echo "acceptance: FAILED" >&2

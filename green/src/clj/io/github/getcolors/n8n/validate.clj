@@ -107,6 +107,12 @@
   (and (not (missing? (:n8n-backup-r2-access-key-id opts)))
        (not (missing? (:n8n-backup-r2-secret-access-key opts)))))
 
+(defn credential-sharing-accepted?
+  "Whether desired state explicitly accepts one R2 credential reaching
+  OpenTofu state, live Neon data, and backups alike."
+  [opts]
+  (= "shared-accepted" (str (:r2-credential-sharing opts))))
+
 (defn env-errors [env]
   (when (not-empty (str (get env profile-par)))
     [(str profile-par " is set; profile must come from colors.yml only")]))
@@ -274,6 +280,10 @@
                (not (true? (:cloudflare-proxied opts))))
       [":vultr-http-sources cloudflare requires :cloudflare-proxied true, or ACME HTTP-01 is firewalled off and no certificate is ever issued"])
 
+    (when-not (or (missing? (:r2-credential-sharing opts))
+                  (contains? #{"split" "shared-accepted"} (str (:r2-credential-sharing opts))))
+      [":r2-credential-sharing must be split or shared-accepted"])
+
     (when-not (or (missing? (:vultr-os-id opts)) (integer? (:vultr-os-id opts)))
       [":vultr-os-id must be Vultr's numeric operating-system id"]))))
 
@@ -322,6 +332,39 @@
      (for [k (distinct ks) :when (missing? (get opts k))]
        (str "required credential is not set: " (green-cli/par-name k)))
      (when (= :create event) (r2-secret-errors opts))
+     ;; Blast radius, enforced rather than merely observed.
+     ;;
+     ;; This package already refuses to let backups share a BUCKET with state
+     ;; or live data. Letting them silently share a CREDENTIAL was the same
+     ;; property enforced on one axis and ignored on the other -- which is
+     ;; worse than enforcing neither, because the visible rule implies the
+     ;; invisible one is handled too.
+     ;;
+     ;; Measured on a live host: the shared pair could list, write and DELETE
+     ;; in the OpenTofu state bucket and delete backup sets. A backup a
+     ;; compromised host can erase is not a backup, and the host has no
+     ;; legitimate reason to touch state at all.
+     ;;
+     ;; The shared pair stays reachable, because a first converge may predate
+     ;; the scoped tokens -- but only as a DELIBERATE, committed choice that
+     ;; shows up in a colors.yml diff, never as a silent default.
+     (when (and (= :create event)
+                (not (backup-credential-scoped? opts))
+                (not (credential-sharing-accepted? opts)))
+       [(str "backups would use the same R2 credential as OpenTofu state and live "
+             "Neon data. Supply " (green-cli/par-name :n8n-backup-r2-access-key-id)
+             " and " (green-cli/par-name :n8n-backup-r2-secret-access-key)
+             " scoped to the backup bucket alone, or set "
+             ":r2-credential-sharing: shared-accepted in colors.yml to record "
+             "that the blast radius is accepted")])
+     (when (and (= :create event)
+                (not (:split? (effective-r2 opts)))
+                (not (credential-sharing-accepted? opts)))
+       [(str "live Neon data would use the same R2 credential as OpenTofu state. "
+             "Supply " (green-cli/par-name :neon-r2-access-key-id) " and "
+             (green-cli/par-name :neon-r2-secret-access-key)
+             " scoped to the data bucket alone, or set "
+             ":r2-credential-sharing: shared-accepted in colors.yml")])
      ;; n8n requires at least 32 characters. A shorter key is accepted by n8n
      ;; itself and then silently weakens every credential in the database.
      (when (and (= :create event)

@@ -147,3 +147,8 @@ Beyond presence and shape, `./green build` refuses:
   either — blast radius
 - keys removed in n8n 2.0: `n8n-config-files`,
   `queue-worker-max-stalled-count`, `n8n-available-binary-data-modes`
+- **one R2 credential reaching state, live data and backups alike**, unless
+  `r2-credential-sharing: shared-accepted` records the choice. Bucket
+  separation was already enforced; enforcing it on one axis while silently
+  permitting the other is worse than enforcing neither, because the visible
+  rule implies the invisible one is handled too
