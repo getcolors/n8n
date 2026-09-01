@@ -7,13 +7,17 @@
 #   Cloudflare      COLORS_PAR_CLOUDFLARE_API_TOKEN
 #   state in R2     COLORS_PAR_R2_ACCESS_KEY_ID
 #                   COLORS_PAR_R2_SECRET_ACCESS_KEY
-#   Neon data +     COLORS_PAR_N8N_R2_ACCESS_KEY_ID       (optional)
-#   backups in R2   COLORS_PAR_N8N_R2_SECRET_ACCESS_KEY   (optional)
-#                   Falls back to COLORS_PAR_R2_* when unset, which is the
-#                   current state: one pair reaches OpenTofu state, live Neon
-#                   data, and backups alike. Splitting it is the hardening
-#                   path -- see README. A separate backup-only pair may be
-#                   supplied as COLORS_PAR_N8N_BACKUP_R2_*.
+#   Neon data       COLORS_PAR_NEON_R2_ACCESS_KEY_ID      (optional)
+#   in R2           COLORS_PAR_NEON_R2_SECRET_ACCESS_KEY  (optional)
+#   backups in R2   COLORS_PAR_N8N_BACKUP_R2_ACCESS_KEY_ID      (optional)
+#                   COLORS_PAR_N8N_BACKUP_R2_SECRET_ACCESS_KEY  (optional)
+#                   Either pair falls back to COLORS_PAR_R2_* when unset,
+#                   which is the current state: one pair reaches OpenTofu
+#                   state, live Neon data, and backups alike. Splitting them
+#                   is the hardening path -- see README. These are two
+#                   SEPARATE pairs, one per bucket; the names are what the
+#                   code reads, so a near-miss silently leaves the shared
+#                   credential in place.
 #   n8n secret      COLORS_PAR_N8N_ENCRYPTION_KEY
 #                   (>= 32 chars; encrypts stored node credentials. LOSING THIS
 #                   MAKES EVERY SAVED CREDENTIAL UNDECRYPTABLE -- it is not
