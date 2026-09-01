@@ -4,7 +4,7 @@
 # dependencies = ["package-n8n-blue", "blue"]
 #
 # [tool.uv.sources]
-# package-n8n-blue = { git = "https://github.com/getcolors/n8n.git", rev = "2e7cf61bb756a7bd9e63015578b24baef2faa883", subdirectory = "blue" }
+# package-n8n-blue = { git = "https://github.com/getcolors/n8n.git", rev = "e285f58d38f49e00a7ba0217dbbff88efd304f1c", subdirectory = "blue" }
 # package-neon-blue = { git = "https://github.com/getcolors/neon.git", rev = "87c009549a928fdf1f9dc135f9740c3baa5782d7", subdirectory = "blue" }
 # package-once-blue = { git = "https://github.com/getcolors/once.git", rev = "759eb0311b4bdf881eab813cfe5d00f76b9310cc", subdirectory = "blue" }
 # blue = { git = "https://github.com/getcolors/blue.git", rev = "290f313ead5ca162875c33a049c880da017eae09" }
