@@ -126,7 +126,7 @@ otherwise.
 
 ## Compute and SSH ownership
 
-The package depends on `colors-compute` at `3451a05e719b0ad6809f3c88b241a8c010b8f58b` and Neon application templates at `6042de0184570d970c3b2775fd266d685ff46606`. Compute uses the same singleton library workflow as cluster fan-out. R2/S3 state uses `<profile>/compute/shared.tfstate`, `<profile>/compute/nodes/0.tfstate`, and the deployment journal. Existing `<profile>/n8n-infrastructure.tfstate` requires explicit migration and is refused automatically. DNS stays in its separate existing state.
+The package depends on `colors-compute` at `3451a05e719b0ad6809f3c88b241a8c010b8f58b` and Neon application templates at `e19a213067d307b55d1b37a2e83cdc1a150b7d91`. Compute uses the same singleton library workflow as cluster fan-out. R2/S3 state uses `<profile>/compute/shared.tfstate`, `<profile>/compute/nodes/0.tfstate`, and the deployment journal. Existing `<profile>/n8n-infrastructure.tfstate` requires explicit migration and is refused automatically. DNS stays in its separate existing state.
 
 Create runs compute, DNS, profile SSH alias, application convergence, then acceptance. Delete first inspects owned compute, stops the application, removes the alias, removes DNS, then destroys compute. The library manages generated keys and registration cleanup. External private paths are explicit Ansible and acceptance SSH inputs. Managed aliases add `IdentityFile ~/.ssh/<profile>`; external aliases do not.
 

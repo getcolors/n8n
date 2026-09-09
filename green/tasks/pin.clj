@@ -32,7 +32,7 @@
        "#\n"
        "# [tool.uv.sources]\n"
        "# package-n8n-blue = { git = \"https://github.com/getcolors/n8n.git\", rev = \"" sha "\", subdirectory = \"blue\" }\n"
-       "# package-neon-blue = { git = \"https://github.com/getcolors/neon.git\", rev = \"6042de0184570d970c3b2775fd266d685ff46606\", subdirectory = \"blue\" }\n"
+       "# package-neon-blue = { git = \"https://github.com/getcolors/neon.git\", rev = \"e19a213067d307b55d1b37a2e83cdc1a150b7d91\", subdirectory = \"blue\" }\n"
        "# package-once-blue = { git = \"https://github.com/getcolors/once.git\", rev = \"a1fe1be7a427dd2e406ff7befd1c43a53e7c3618\", subdirectory = \"blue\" }\n"
        "# blue = { git = \"https://github.com/getcolors/blue.git\", rev = \"290f313ead5ca162875c33a049c880da017eae09\" }\n"
        "#\n"

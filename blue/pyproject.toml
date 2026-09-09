@@ -24,7 +24,7 @@ package-once-blue = { git = "https://github.com/getcolors/once.git", subdirector
 # deliberate: `scripts/golden.sh` renders the merged Neon+n8n tree, so a pin
 # bump shows up as a reviewable diff instead of a surprise on a host. Keep this
 # rev equal to green/deps.edn's and red/package.json's.
-package-neon-blue = { git = "https://github.com/getcolors/neon.git", subdirectory = "blue", rev = "6042de0184570d970c3b2775fd266d685ff46606" }
+package-neon-blue = { git = "https://github.com/getcolors/neon.git", subdirectory = "blue", rev = "e19a213067d307b55d1b37a2e83cdc1a150b7d91" }
 
 # The ONCE and neon pins above carry their own, older blue pins; without this
 # override the git URLs conflict and uv refuses to resolve. The override makes
