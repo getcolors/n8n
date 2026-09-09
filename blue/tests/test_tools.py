@@ -35,8 +35,8 @@ def test_the_ansible_local_stage_is_the_dependencys_too():
     # Writing our own dropped its `<% if ssh-keygen %> private_key_file`
     # conditional, and the deployment then had no identity to offer.
     for spec in tools.ansible_local_specs(fixture()):
-        assert spec["template"]["name"].startswith("neon/tools/ansible-local/")
-    assert not (tools.ROOT / "tools" / "ansible-local").exists()
+        assert spec["template"]["name"].startswith("tools/ansible-local/")
+    assert (tools.ROOT / "tools" / "ansible-local").exists()
 
 
 def test_the_inventory_places_one_host_in_both_groups():
@@ -54,7 +54,7 @@ def test_the_inventory_places_one_host_in_both_groups():
 
 
 def test_http_sources_resolve_explicit_lists_verbatim():
-    resolved = tools.http_sources({"vultr-http-sources": ["1.2.3.0/24", "::/0"]})
+    resolved = tools.http_sources({"provider-compute":"vultr", "vultr-http-sources": ["1.2.3.0/24", "::/0"]})
     assert resolved["source"] == "explicit"
     assert resolved["ranges"] == ["1.2.3.0/24", "::/0"]
 

@@ -34,7 +34,7 @@ neon_sha=$(awk '/neon\.git/ {found=1} found && match($0, /:git\/sha "[0-9a-f]{40
 [[ -n $neon_sha ]]
 grep -q "getcolors/neon#$neon_sha" "$root/red/package.json"
 grep -q "rev = \"$neon_sha\"" "$root/blue/pyproject.toml"
-grep -q "getcolors/neon#$neon_sha" "$red_launcher"
+grep -q "getcolors/neon#$neon_sha" "$root/package.json"
 
 [[ -L "$root/green/green" ]] && [[ $(readlink "$root/green/green") == ../skills/package-n8n-green/green ]]
 [[ -L "$root/red/red" ]] && [[ $(readlink "$root/red/red") == ../skills/package-n8n-red/red ]]
@@ -46,7 +46,7 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 cp "$green_launcher" "$tmp/green"; chmod +x "$tmp/green"
 sed "s#WORKDIR#.colors#" "$root/test/fixtures/colors.yml" > "$tmp/colors.yml"
 (cd "$tmp" && N8N_LIB_ROOT="$root" ./green build >/dev/null)
-[[ -f "$tmp/.colors/n8n-fixture/n8n-infrastructure/main.tf" ]]
+[[ -f "$tmp/.colors/n8n-fixture/compute/nodes/0/node-none.tf.json" ]]
 [[ -f "$tmp/.colors/n8n-fixture/n8n-dns/main.tf" ]]
 [[ -f "$tmp/.colors/n8n-fixture/n8n-ansible/n8n.yml" ]]
 # The storage tier arrives from the dependency, in its own subdirectory.

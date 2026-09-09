@@ -1,3 +1,9 @@
+import localMain from "../resources/tools/ansible-local/main.yml" with {type:"text"};
+import localInventory from "../resources/tools/ansible-local/inventory.ini" with {type:"text"};
+import localConfig from "../resources/tools/ansible-local/ansible.cfg" with {type:"text"};
+import {source_cidrs} from "colors-compute-red";
+import {mkdirSync,writeFileSync} from "node:fs";
+import * as compute from "./compute.ts";
 import { createHash } from "node:crypto";
 import * as ansible from "red/ansible";
 import { stageDir } from "red/cli";
@@ -29,7 +35,6 @@ import ansibleRehearsalSh from "../resources/tools/ansible/n8n-rehearsal.sh" wit
 import ansiblePruneDrillSh from "../resources/tools/ansible/n8n-prune-drill.sh" with { type: "text" };
 import ansibleRestartDrillSh from "../resources/tools/ansible/n8n-restart-drill.sh" with { type: "text" };
 import dnsMainTf from "../resources/tools/dns/main.tf" with { type: "text" };
-import infrastructureMainTf from "../resources/tools/infrastructure/main.tf" with { type: "text" };
 
 export const infrastructureTool = "n8n-infrastructure";
 export const dnsTool = "n8n-dns";
@@ -174,9 +179,8 @@ export interface HttpSources {
 // resolved set plus how it was obtained, so the caller can record a checksum
 // and so a real converge can refuse to proceed on a stale fallback.
 export async function httpSources(opts: Opts): Promise<HttpSources> {
-  if (validate.s(opts["vultr-http-sources"]) !== "cloudflare") {
-    return { source: "explicit", ranges: cidrs(opts, "vultr-http-sources") };
-  }
+  const selected=source_cidrs(opts,"http-sources","n8n-http-sources");
+  if (!(selected.length===1&&selected[0]==="cloudflare")) return {source:"explicit",ranges:selected};
   const live = await fetchCloudflareRanges();
   return live
     ? { source: "fetched", ranges: live }
@@ -188,40 +192,12 @@ export function rangesChecksum(values: string[]): string {
     .digest("hex").slice(0, 16);
 }
 
-export async function infrastructureData(opts: Opts): Promise<Opts> {
-  const { source, ranges } = await httpSources(opts);
-  return {
-    ...opts,
-    "compute-name": validate.computeName(opts),
-    "ssh-keygen": validate.keygen(opts),
-    "ssh-sources-hcl": tofu.hclList(cidrs(opts, "vultr-ssh-sources")),
-    "http-sources-hcl": tofu.hclList(ranges),
-    "http-sources-origin": source,
-    "http-sources-ranges": ranges,
-    "http-sources-checksum": rangesChecksum(ranges),
-  };
-}
-
-export async function infrastructureStep(opts: Opts): Promise<Opts> {
-  const dir = toolDir(opts, infrastructureTool);
-  const data = await infrastructureData(opts);
-  const specs = [
-    spec(template("infrastructure/main.tf", infrastructureMainTf), `${dir}/main.tf`, data),
-    // The resolved range set is recorded, with a checksum, so a firewall
-    // change is explainable after the fact rather than an unattributable diff
-    // in a provider plan.
-    rawSpec(`${dir}/http-sources.json`, pretty({
-      origin: data["http-sources-origin"],
-      checksum: data["http-sources-checksum"],
-      ranges: data["http-sources-ranges"],
-    })),
-  ];
-  const result = await tofu.tofuWithSpec(opts, specs,
-    { dir, env: credentialEnv(opts, "provider-compute") });
-  if (failed(result)) return result;
-  if (opts["red/event"] === "build") return { ...result, ...fallbackParams(opts) };
-  if (opts["red/event"] === "delete") return result;
-  return { ...result, ...fallbackParams(opts), ...outputParams(result) };
+export async function infrastructureStep(opts:Opts):Promise<Opts>{
+ if(opts['red/event']==='delete')return compute.infrastructureStep(opts);
+ const resolved=await httpSources(opts);
+ if(opts['red/event']==='create'&&!opts['red/dry-run']&&resolved.source==='fallback')return {...opts,'red/exit':1,'red/err':'Cloudflare origin ranges unavailable'};
+ const dir=toolDir(opts,infrastructureTool);mkdirSync(dir,{recursive:true});writeFileSync(dir+'/http-sources.json',pretty({origin:resolved.source,checksum:rangesChecksum(resolved.ranges),ranges:resolved.ranges}));
+ return compute.infrastructureStep({...opts,'n8n-http-sources':resolved.ranges});
 }
 
 // ---------------------------------------------------------- ansible (local)
@@ -233,7 +209,7 @@ export async function infrastructureStep(opts: Opts): Promise<Opts> {
 export function ansibleLocalData(opts: Opts): Opts {
   return {
     ...opts,
-    "ssh-keygen": validate.keygen(opts),
+    "ssh-keygen": (opts['colors-compute/key'] ? (opts['colors-compute/key'] as any).mode === 'managed' : validate.keygen(opts)),
     "ssh-config-identity-file": sshConfig.identityFile(opts),
   };
 }
@@ -246,12 +222,13 @@ export function ansibleLocalSpecs(opts: Opts): Spec[] {
   // alone. A second implementation here would be a second thing to keep
   // conformant with a standard that already has a reference implementation.
   return ["ansible.cfg", "inventory.ini", "main.yml"].map((name) =>
-    spec(neonTemplate("ansible-local", name), `${dir}/${name}`, data));
+    spec(template("ansible-local/"+name, ({"ansible.cfg":localConfig,"inventory.ini":localInventory,"main.yml":localMain} as Record<string,string>)[name]!), `${dir}/${name}`, data));
 }
 
 // Write or remove the `~/.ssh/config` block. The same playbook serves both
 // events; `block_state` is what distinguishes them.
 export async function ansibleLocalStep(opts: Opts): Promise<Opts> {
+  if(opts["n8n/already-destroyed"]) return opts;
   const dir = toolDir(opts, ansibleLocalTool);
   const isDelete = opts["red/event"] === "delete";
   return ansible.ansibleWithSpec(opts, {
@@ -287,7 +264,7 @@ export function inventory(opts: Opts): string {
       hosts: {
         [profile]: {
           ansible_host: opts.ip ?? "192.0.2.10",
-          ansible_user: "root",
+          ansible_user: opts.user ?? "root",
         },
       },
     },
@@ -306,7 +283,7 @@ export function ansibleData(opts: Opts): Opts {
   return {
     ...opts,
     ip: opts.ip ?? "192.0.2.10",
-    "ssh-keygen": validate.keygen(opts),
+    "ssh-keygen": (opts['colors-compute/key'] ? (opts['colors-compute/key'] as any).mode === 'managed' : validate.keygen(opts)),
     "neon-r2-prefix": opts["neon-r2-prefix"] ?? r2Prefix(opts),
   };
 }
@@ -423,7 +400,7 @@ export async function ansibleStep(opts: Opts): Promise<Opts> {
     dir,
     inventory: "inventory.json",
     playbooks: { create: "site.yml", delete: "cleanup.yml" },
-    hostKeyChecking: false,
+    hostKeyChecking: false, privateKey: opts["ssh-private-key-path"] as string | undefined,
   }, ansibleSpecs(opts));
 }
 
@@ -460,6 +437,7 @@ export function psqlArgs(opts: Opts, port: number, sql: string): string[] {
 export function tunnelArgs(opts: Opts, port: number): string[] {
   return ["bash", "-c",
     "ssh -f -o ExitOnForwardFailure=yes -o BatchMode=yes" +
+    (opts["ssh-private-key-path"] ? " -i '"+String(opts["ssh-private-key-path"]).replaceAll("'", "'\\''")+"'" : "") +
     ` -L ${port}:127.0.0.1:55433 ` +
     `${sshConfig.hostAlias(opts)} sleep 45 >/dev/null 2>&1`];
 }
@@ -474,7 +452,7 @@ export const smokeSql =
 // The generated application-role password, read over SSH and held only in this
 // process. Never merged into opts, never printed.
 export async function readRemotePassword(opts: Opts): Promise<string | undefined> {
-  const result = await runQuiet(["ssh", "-o", "BatchMode=yes", sshConfig.hostAlias(opts),
+  const result = await runQuiet(["ssh", "-o", "BatchMode=yes", ...(opts["ssh-private-key-path"] ? ["-i",String(opts["ssh-private-key-path"])] : []), sshConfig.hostAlias(opts),
     "cat", "/etc/neon/secrets/neon_role_password"], {}, 20000);
   if (result.exit !== 0) return undefined;
   const password = String(result.out ?? "").trim();

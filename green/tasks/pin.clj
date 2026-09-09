@@ -32,8 +32,8 @@
        "#\n"
        "# [tool.uv.sources]\n"
        "# package-n8n-blue = { git = \"https://github.com/getcolors/n8n.git\", rev = \"" sha "\", subdirectory = \"blue\" }\n"
-       "# package-neon-blue = { git = \"https://github.com/getcolors/neon.git\", rev = \"87c009549a928fdf1f9dc135f9740c3baa5782d7\", subdirectory = \"blue\" }\n"
-       "# package-once-blue = { git = \"https://github.com/getcolors/once.git\", rev = \"759eb0311b4bdf881eab813cfe5d00f76b9310cc\", subdirectory = \"blue\" }\n"
+       "# package-neon-blue = { git = \"https://github.com/getcolors/neon.git\", rev = \"6042de0184570d970c3b2775fd266d685ff46606\", subdirectory = \"blue\" }\n"
+       "# package-once-blue = { git = \"https://github.com/getcolors/once.git\", rev = \"a1fe1be7a427dd2e406ff7befd1c43a53e7c3618\", subdirectory = \"blue\" }\n"
        "# blue = { git = \"https://github.com/getcolors/blue.git\", rev = \"290f313ead5ca162875c33a049c880da017eae09\" }\n"
        "#\n"
        ;; package-once-blue and package-neon-blue carry their own, older blue

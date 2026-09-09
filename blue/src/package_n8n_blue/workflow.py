@@ -7,49 +7,17 @@ from blue.cli import par_name, read_pars
 from blue.lifecycle import preflight
 from blue.workflow import advice_add, failed, workflow
 
-from . import ssh, ssh_config, tools, validate
+from . import compute, ssh_config, tools, validate
 
 DEFAULTS = {"provider-compute": "vultr", "provider-dns": "cloudflare",
-            "provider-backend": "local", "compute-prevent-destroy": True,
+            "provider-backend": "r2", "compute-prevent-destroy": True,
             "workdir": ".colors"}
 
 
-async def state_output(opts: dict) -> dict | None:
-    """The compute stage's applied `params`, or None when no state is readable.
-    The create matrix keys on this best-effort read: an unreadable state (a
-    fresh clone, a missing backend) counts as absent."""
-    try:
-        outputs = await tofu.outputs(tools.tool_dir(opts, tools.infrastructure_tool),
-                                     tools.backend_credential_env(opts))
-        return (outputs or {}).get("params")
-    except Exception:
-        return None
-
-
 async def start_step(original: dict, env: dict | None = None) -> dict:
-    # The machine key's create matrix and the Vultr preflight run before any
-    # template is rendered: an unowned key on disk or at the provider stops the
-    # run while stopping is still free. Delete fills the same template values —
-    # a destroy renders before it destroys — but checks nothing, because its
-    # key cleanup runs after the compute destroy.
-    async def after(opts, _env, context):
-        real, event = context["real"], context["event"]
-        if real and event == "delete":
-            return {**ssh.with_machine_key(opts),
-                    **((await state_output(opts)) or {}),
-                    "blue/exit": 0}
-        if real and event == "create":
-            opts = await ssh.ensure_key(opts, state_output)
-            if failed(opts):
-                return opts
-            opts = ssh.preflight(ssh.with_machine_key(opts))
-            if failed(opts):
-                return opts
-            opts = ssh_config.preflight(opts)
-            if failed(opts):
-                return opts
-            return {**opts, "blue/exit": 0}
-        return {**ssh.with_machine_key(opts), "blue/exit": 0}
+    def after(opts, _env, context):
+        current = {**opts, 'blue/exit':0}
+        return ssh_config.preflight(current) if context['real'] and context['event']=='create' else current
 
     return await preflight(
         original, defaults=DEFAULTS, overlay=read_pars, env=env,
@@ -69,7 +37,8 @@ async def start_step(original: dict, env: dict | None = None) -> dict:
 def wire_fn(step: str, run_opts: dict):
     if run_opts.get("blue/event") == "delete":
         return {
-            "n8n/start": (start_step, "n8n/ansible"),
+            "n8n/start": (start_step, "n8n/load"),
+            "n8n/load": (compute.load_step, "n8n/ansible"),
             "n8n/ansible": (tools.ansible_step, "n8n/ssh-config"),
             # The `~/.ssh/config` block goes before the destroy, the opposite
             # of the keypair below. A block that outlives its host is stale but
@@ -82,8 +51,7 @@ def wire_fn(step: str, run_opts: dict):
             # still resolving it, while a record removed slightly early merely
             # 404s.
             "n8n/dns": (tools.dns_step, "n8n/infrastructure"),
-            "n8n/infrastructure": (tools.infrastructure_step, "n8n/ssh-cleanup"),
-            "n8n/ssh-cleanup": (ssh.cleanup_step,),
+            "n8n/infrastructure": (tools.infrastructure_step,),
         }.get(step)
     return {
         "n8n/start": (start_step, "n8n/infrastructure"),
@@ -109,15 +77,12 @@ def backend_advice(tool: str):
 
 
 side_effecting = ["n8n/infrastructure", "n8n/dns", "n8n/ssh-config",
-                  "n8n/ansible", "n8n/acceptance", "n8n/ssh-cleanup"]
+                  "n8n/ansible", "n8n/acceptance", "n8n/load"]
 
 
 def create_workflow():
     wf = workflow(start="n8n/start", wire_fn=wire_fn)
-    wf = advice_add(wf, "n8n/infrastructure", "before", "n8n.workflow/backend",
-                    backend_advice(tools.infrastructure_tool))
-    wf = advice_add(wf, "n8n/dns", "before", "n8n.workflow/backend",
-                    backend_advice(tools.dns_tool))
+    wf = advice_add(wf, "n8n/dns", "before", "n8n.workflow/backend", backend_advice(tools.dns_tool))
     return dry_run.advise(progress.advise(wf), side_effecting)
 
 

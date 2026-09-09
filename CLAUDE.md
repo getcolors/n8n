@@ -21,9 +21,7 @@ directory holds a launcher symlink to its skill payload.
 ## The one structural thing to understand
 
 **This package renders another package's templates.** All three colours
-SHA-pin `getcolors/neon` and render twelve of its Ansible templates, plus the
-three `ansible-local` ones, into a `neon/` subdirectory of the ansible stage.
-Nothing is copied into this repository.
+SHA-pin `getcolors/neon` and render twelve of its application Ansible templates into a `neon/` subdirectory of the ansible stage. These application templates are not copied. The local SSH updater is package-owned, as required by the workspace standard.
 
 Each colour reaches them its own way, and all three must resolve the *same*
 commit:
@@ -31,13 +29,12 @@ commit:
 | Colour | Pin | How the templates are read |
 |---|---|---|
 | green | `green/deps.edn` | `neon`'s `deps.edn` publishes `src/resources`, so they resolve as namespaced keyword resources off the classpath |
-| red | `red/package.json` and the `PINS` map in the red payload | `neon`'s `package.json` publishes `red/resources` in `files`; `red/src/neon.ts` resolves the package entry and reads them from disk |
+| red | `red/package.json` and root `package.json` | `neon`'s `package.json` publishes `red/resources` in `files`; `red/src/neon.ts` resolves the package entry and reads them from disk |
 | blue | `blue/pyproject.toml` and the payload's PEP 723 block | the wheel ships them under `package_neon_blue/resources/`; `tools.py` reads them from `Path(package_neon_blue.__file__).parent` |
 
-`scripts/launcher.sh` checks that the four recorded neon pins agree. A `neon`
+`scripts/launcher.sh` checks that the dependency manifests carry the same Neon pin. A `neon`
 pin bump must pass `bb golden`, `scripts/parity.sh`, the merged-Compose
-assertions, and the drills before the recorded SHAs move — in all four places
-at once.
+assertions, and the drills before the recorded SHAs move — in every dependency manifest together.
 
 Consequences that are easy to get wrong:
 
@@ -126,3 +123,11 @@ HEAD.
 To develop against a `neon` working tree the pin has to move — none of the three
 colours reads a `NEON_LIB_ROOT`, and the README and this file should not claim
 otherwise.
+
+## Compute and SSH ownership
+
+The package depends on `colors-compute` at `3451a05e719b0ad6809f3c88b241a8c010b8f58b` and Neon application templates at `6042de0184570d970c3b2775fd266d685ff46606`. Compute uses the same singleton library workflow as cluster fan-out. R2/S3 state uses `<profile>/compute/shared.tfstate`, `<profile>/compute/nodes/0.tfstate`, and the deployment journal. Existing `<profile>/n8n-infrastructure.tfstate` requires explicit migration and is refused automatically. DNS stays in its separate existing state.
+
+Create runs compute, DNS, profile SSH alias, application convergence, then acceptance. Delete first inspects owned compute, stops the application, removes the alias, removes DNS, then destroys compute. The library manages generated keys and registration cleanup. External private paths are explicit Ansible and acceptance SSH inputs. Managed aliases add `IdentityFile ~/.ssh/<profile>`; external aliases do not.
+
+The neutral `n8n-ssh-sources` and `n8n-http-sources` options take precedence over library-resolved legacy provider options. The symbolic HTTP value `cloudflare` retains the fetched ranges and checksum report. A real create refuses a failed fetch; build can use the reviewed fallback. No cloud resources were created while validating this migration.

@@ -4,32 +4,16 @@ import { preflight } from "red/lifecycle";
 import * as progress from "red/progress";
 import * as tofu from "red/tofu";
 import { adviceAdd, failed, workflow, type Opts, type WireDecl } from "red/workflow";
-import * as ssh from "./ssh.ts";
+import * as compute from "./compute.ts";
 import * as sshConfig from "./ssh-config.ts";
 import * as tools from "./tools.ts";
 import * as validate from "./validate.ts";
 
 export const defaults: Opts = {
   "provider-compute": "vultr", "provider-dns": "cloudflare",
-  "provider-backend": "local", "compute-prevent-destroy": true,
+  "provider-backend": "r2", "compute-prevent-destroy": true,
   workdir: ".colors",
 };
-
-// The compute stage's applied `params`, or undefined when no state is
-// readable. The create matrix keys on this best-effort read: an unreadable
-// state (a fresh clone, a missing backend) counts as absent.
-export async function stateOutput(opts: Opts): Promise<Record<string, unknown> | undefined> {
-  try {
-    const outputs = await tofu.outputs(
-      tools.toolDir(opts, tools.infrastructureTool),
-      tools.backendCredentialEnv(opts),
-    );
-    const params = outputs.params;
-    return params && typeof params === "object" ? params as Record<string, unknown> : undefined;
-  } catch {
-    return undefined;
-  }
-}
 
 export async function startStep(
   opts: Opts,
@@ -50,35 +34,15 @@ export async function startStep(
           ? [`compute destruction is protected; set ${parName("compute-prevent-destroy")}=false to delete`]
           : [],
     ],
-    // The machine key's create matrix and the Vultr preflight run before any
-    // template is rendered: an unowned key on disk or at the provider stops
-    // the run while stopping is still free. Delete fills the same template
-    // values — a destroy renders before it destroys — but checks nothing,
-    // because its key cleanup runs after the compute destroy.
-    afterValidate: async (current, _environment, { event, real }) => {
-      if (real && event === "delete") {
-        return {
-          ...ssh.withMachineKey(current),
-          ...(await stateOutput(current) ?? {}),
-          "red/exit": 0,
-        };
-      }
-      if (real && event === "create") {
-        let next = await ssh.ensureKey(current, stateOutput);
-        if (failed(next)) return next;
-        next = await ssh.preflight(ssh.withMachineKey(next));
-        if (!failed(next)) next = sshConfig.preflight(next);
-        return failed(next) ? next : { ...next, "red/exit": 0 };
-      }
-      return { ...ssh.withMachineKey(current), "red/exit": 0 };
-    },
+    afterValidate: (current, _environment, {event,real}) => real && event==='create' ? sshConfig.preflight({...current,'red/exit':0}) : {...current,'red/exit':0},
   }, env);
 }
 
 export function wireFn(step: string, runOpts: Opts): WireDecl | undefined {
   if (runOpts["red/event"] === "delete") {
     const graph: Record<string, WireDecl> = {
-      "n8n/start": [startStep, "n8n/ansible"],
+      "n8n/start": [startStep, "n8n/load"],
+      "n8n/load": [compute.loadStep, "n8n/ansible"],
       "n8n/ansible": [tools.ansibleStep, "n8n/ssh-config"],
       // The `~/.ssh/config` block goes before the destroy, the opposite of the
       // keypair below. A block that outlives its host is stale but harmless; a
@@ -89,8 +53,7 @@ export function wireFn(step: string, runOpts: Opts): WireDecl | undefined {
       // that no longer answers is a live outage for anything still resolving
       // it, while a record removed slightly early merely 404s.
       "n8n/dns": [tools.dnsStep, "n8n/infrastructure"],
-      "n8n/infrastructure": [tools.infrastructureStep, "n8n/ssh-cleanup"],
-      "n8n/ssh-cleanup": [ssh.cleanupStep],
+      "n8n/infrastructure": [tools.infrastructureStep],
     };
     return graph[step];
   }
@@ -121,15 +84,12 @@ export function backendAdvice(tool: string) {
 
 export const sideEffecting = [
   "n8n/infrastructure", "n8n/dns", "n8n/ssh-config",
-  "n8n/ansible", "n8n/acceptance", "n8n/ssh-cleanup",
+  "n8n/ansible", "n8n/acceptance", "n8n/load",
 ];
 
 function create() {
   let wf = workflow({ start: "n8n/start", wireFn });
-  wf = adviceAdd(wf, "n8n/infrastructure", "before", "n8n.workflow/backend",
-    backendAdvice(tools.infrastructureTool));
-  wf = adviceAdd(wf, "n8n/dns", "before", "n8n.workflow/backend",
-    backendAdvice(tools.dnsTool));
+  wf = adviceAdd(wf,"n8n/dns","before","n8n.workflow/backend",backendAdvice(tools.dnsTool));
   return dryRun.advise(progress.advise(wf), sideEffecting);
 }
 

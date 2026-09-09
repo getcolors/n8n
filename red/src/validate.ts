@@ -1,7 +1,8 @@
 import { parName } from "red/cli";
 import type { Opts } from "red/workflow";
 import { providers } from "package-once-red";
-import { onceSsh } from "./once.ts";
+import {plan_deployment,registry,source_cidrs} from "colors-compute-red";
+import * as compute from "./compute.ts";
 
 export const profilePar = parName("profile");
 
@@ -39,8 +40,6 @@ export const required = [
   // public name and TLS
   "cloudflare-zone", "cloudflare-record-name", "cloudflare-proxied",
   // compute
-  "vultr-region", "vultr-plan", "vultr-os-id",
-  "vultr-ssh-sources", "vultr-http-sources",
   "r2-bucket", "r2-endpoint",
 ];
 
@@ -92,14 +91,13 @@ export function placeholder(value: unknown): boolean {
 // every label, including the firewall's, derives from this and never from the
 // raw override key or a second copy of the profile (Compute Name Standard §3).
 export function computeName(opts: Opts): string {
-  const override = opts["vultr-name"];
-  return placeholder(override) ? s(opts.profile) : s(override).trim();
+  return plan_deployment(opts,compute.topology,compute.requirements(opts)).cluster.nodes[0].name;
 }
 
 // Whether this deployment owns its machine keypair. Delegates to ONCE, the
 // standard's reference implementation, so one rule decides it everywhere.
 export function keygen(opts: Opts): boolean {
-  return onceSsh.keygen(opts);
+  return plan_deployment(opts,compute.topology,compute.requirements(opts)).key.mode === 'managed';
 }
 
 // The human-readable tag out of a `repo:tag@sha256:...` pin, or undefined.
@@ -175,14 +173,9 @@ export function stateErrors(opts: Opts): string[] {
     if (missing(opts[key])) errors.push(`:${key} is required`);
   }
 
-  if (opts["provider-compute"] !== "vultr") {
-    errors.push(":provider-compute must be vultr");
-  }
+  errors.push(...compute.errors(opts));
   if (opts["provider-dns"] !== "cloudflare") {
     errors.push(":provider-dns must be cloudflare");
-  }
-  if (!["local", "s3", "r2"].includes(String(opts["provider-backend"]))) {
-    errors.push(":provider-backend must be local, s3, or r2");
   }
   if (typeof opts["compute-prevent-destroy"] !== "boolean") {
     errors.push(":compute-prevent-destroy must be true or false");
@@ -354,9 +347,9 @@ export function stateErrors(opts: Opts): string[] {
   // which the firewall drops. The converge then succeeds, and the first HTTPS
   // request fails on a certificate that was never issued. Proxied, the
   // challenge arrives from a Cloudflare address and is admitted.
-  if (s(opts["vultr-http-sources"]) === "cloudflare" &&
+  if (compute.symbolicHttp(opts) &&
       opts["cloudflare-proxied"] !== true) {
-    errors.push(":vultr-http-sources cloudflare requires :cloudflare-proxied true, or ACME HTTP-01 is firewalled off and no certificate is ever issued");
+    errors.push(":n8n-http-sources cloudflare requires :cloudflare-proxied true, or ACME HTTP-01 is firewalled off and no certificate is ever issued");
   }
 
   if (!(missing(opts["r2-credential-sharing"]) ||
@@ -364,19 +357,15 @@ export function stateErrors(opts: Opts): string[] {
     errors.push(":r2-credential-sharing must be split or shared-accepted");
   }
 
-  const osId = opts["vultr-os-id"];
-  if (!(missing(osId) || (typeof osId === "number" && Number.isInteger(osId)))) {
-    errors.push(":vultr-os-id must be Vultr's numeric operating-system id");
-  }
   return errors;
 }
 
 export function backendSecrets(opts: Opts): string[] {
-  return providers["provider-backend"]?.[String(opts["provider-backend"])]?.secrets ?? [];
+  return (registry.backend as Record<string,any>)?.[String(opts["provider-backend"])]?.secrets ?? [];
 }
 
 // What talking to the providers needs, on any real event.
-export const providerSecrets = ["vultr-api-key", "cloudflare-api-token"];
+export const providerSecrets = ["cloudflare-api-token"];
 
 // What converging the machine needs, and therefore only a create.
 //
@@ -457,11 +446,11 @@ export function secretErrors(opts: Opts, event: string): string[] {
 export function tofuEnv(opts: Opts, slot: string): Record<string, string> {
   switch (slot) {
     case "provider-compute":
-      return { "vultr-api-key": "VULTR_API_KEY" };
+      return {};
     case "provider-dns":
       return { "cloudflare-api-token": "CLOUDFLARE_API_TOKEN" };
     case "provider-backend":
-      return providers["provider-backend"]?.[String(opts["provider-backend"])]?.tofuEnv ?? {};
+      return opts['provider-backend']==='r2' ? {'r2-access-key-id':'AWS_ACCESS_KEY_ID','r2-secret-access-key':'AWS_SECRET_ACCESS_KEY'} : {};
     default:
       return {};
   }

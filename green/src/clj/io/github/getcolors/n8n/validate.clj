@@ -1,5 +1,5 @@
 (ns io.github.getcolors.n8n.validate
-  (:require [clojure.string :as str]
+  (:require [io.github.getcolors.compute :as library] [io.github.getcolors.n8n.compute :as compute] [io.github.getcolors.compute-planning :as planning] [clojure.string :as str]
             [green.cli :as green-cli]
             [io.github.getcolors.once.ssh :as once-ssh]
             [io.github.getcolors.once.validate :as once-validate]))
@@ -40,8 +40,6 @@
    ;; public name and TLS
    :cloudflare-zone :cloudflare-record-name :cloudflare-proxied
    ;; compute
-   :vultr-region :vultr-plan :vultr-os-id
-   :vultr-ssh-sources :vultr-http-sources
    :r2-bucket :r2-endpoint])
 
 (def image-keys [:neon-image :neon-compute-image :n8n-image :n8n-runners-image
@@ -71,10 +69,9 @@
   (or (missing? v) (= "REPLACE_ME" (str/trim (str v)))))
 
 (defn compute-name [opts]
-  (let [override (:vultr-name opts)]
-    (if (placeholder? override) (str (:profile opts)) (str/trim (str override)))))
+  (get-in (planning/plan-deployment (compute/settings opts) compute/topology (compute/requirements opts)) [:cluster :nodes 0 :name]))
 
-(defn keygen? [opts] (once-ssh/keygen? opts))
+(defn keygen? [opts] (= "managed" (get-in (planning/plan-deployment (compute/settings opts) compute/topology (compute/requirements opts)) [:key :mode])))
 
 (defn image-version
   "The human-readable tag out of a `repo:tag@sha256:...` pin, or nil."
@@ -126,12 +123,9 @@
     (for [k required :when (missing? (get opts k))] (str k " is required"))
     (for [k soak-keys :when (missing? (get opts k))] (str k " is required"))
 
-    (when-not (= "vultr" (:provider-compute opts))
-      [":provider-compute must be vultr"])
+    (compute/errors opts)
     (when-not (= "cloudflare" (:provider-dns opts))
       [":provider-dns must be cloudflare"])
-    (when-not (contains? #{"local" "s3" "r2"} (:provider-backend opts))
-      [":provider-backend must be local, s3, or r2"])
     (when-not (boolean? (:compute-prevent-destroy opts))
       [":compute-prevent-destroy must be true or false"])
 
@@ -276,24 +270,23 @@
     ;; succeeds, and the first HTTPS request fails on a certificate that was
     ;; never issued. Proxied, the challenge arrives from a Cloudflare address
     ;; and is admitted.
-    (when (and (= "cloudflare" (str (:vultr-http-sources opts)))
+    (when (and (compute/symbolic-http? opts)
                (not (true? (:cloudflare-proxied opts))))
-      [":vultr-http-sources cloudflare requires :cloudflare-proxied true, or ACME HTTP-01 is firewalled off and no certificate is ever issued"])
+      [":n8n-http-sources cloudflare requires :cloudflare-proxied true, or ACME HTTP-01 is firewalled off and no certificate is ever issued"])
 
     (when-not (or (missing? (:r2-credential-sharing opts))
                   (contains? #{"split" "shared-accepted"} (str (:r2-credential-sharing opts))))
       [":r2-credential-sharing must be split or shared-accepted"])
 
-    (when-not (or (missing? (:vultr-os-id opts)) (integer? (:vultr-os-id opts)))
-      [":vultr-os-id must be Vultr's numeric operating-system id"]))))
+)))
 
 (defn backend-secrets [opts]
-  (:secrets (get-in once-validate/providers
-                    [:provider-backend (:provider-backend opts)])))
+  (:secrets (get-in library/registry
+                    [:backend (keyword (:provider-backend opts))])))
 
 (def provider-secrets
   "What talking to the providers needs, on any real event."
-  [:vultr-api-key :cloudflare-api-token])
+  [:cloudflare-api-token])
 
 (def application-secrets
   "What converging the machine needs, and therefore only a create.
@@ -375,8 +368,7 @@
 
 (defn tofu-env [opts slot]
   (case slot
-    :provider-compute {:vultr-api-key "VULTR_API_KEY"}
+    :provider-compute {}
     :provider-dns     {:cloudflare-api-token "CLOUDFLARE_API_TOKEN"}
-    :provider-backend (:tofu-env (get-in once-validate/providers
-                                         [:provider-backend (:provider-backend opts)]) {})
+    :provider-backend (if (= "r2" (:provider-backend opts)) {:r2-access-key-id "AWS_ACCESS_KEY_ID" :r2-secret-access-key "AWS_SECRET_ACCESS_KEY"} {})
     {}))

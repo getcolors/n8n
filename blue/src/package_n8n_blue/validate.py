@@ -10,7 +10,8 @@ from __future__ import annotations
 import re
 
 from blue.cli import par_name
-from package_once_blue import ssh as once_ssh
+from colors_compute import plan_deployment, registry, source_cidrs
+from . import compute
 from package_once_blue.validate import providers as once_providers
 
 profile_par = par_name("profile")
@@ -49,8 +50,6 @@ required = [
     # public name and TLS
     "cloudflare-zone", "cloudflare-record-name", "cloudflare-proxied",
     # compute
-    "vultr-region", "vultr-plan", "vultr-os-id",
-    "vultr-ssh-sources", "vultr-http-sources",
     "r2-bucket", "r2-endpoint",
 ]
 
@@ -107,14 +106,14 @@ def compute_name(opts: dict) -> str:
     """What this deployment calls its machine. The one function that answers
     it — every label, including the firewall's, derives from this and never
     from the raw override key or a second copy of the profile (§3)."""
-    override = opts.get("vultr-name")
-    return _s(opts.get("profile")) if placeholder(override) else _s(override).strip()
+    return plan_deployment(opts, compute.TOPOLOGY, compute.requirements(opts))['cluster']['nodes'][0]['name']
+
 
 
 def keygen(opts: dict) -> bool:
     """Whether this deployment owns its machine keypair. Delegates to ONCE, the
     standard's reference implementation, so one rule decides it everywhere."""
-    return once_ssh.keygen(opts)
+    return plan_deployment(opts, compute.TOPOLOGY, compute.requirements(opts))['key']['mode'] == 'managed'
 
 
 def image_version(value) -> str | None:
@@ -178,12 +177,9 @@ def state_errors(opts: dict) -> list[str]:
     errors += [f":{k} is required" for k in required if missing(opts.get(k))]
     errors += [f":{k} is required" for k in soak_keys if missing(opts.get(k))]
 
-    if opts.get("provider-compute") != "vultr":
-        errors.append(":provider-compute must be vultr")
+    errors += compute.errors(opts)
     if opts.get("provider-dns") != "cloudflare":
         errors.append(":provider-dns must be cloudflare")
-    if opts.get("provider-backend") not in ("local", "s3", "r2"):
-        errors.append(":provider-backend must be local, s3, or r2")
     if not isinstance(opts.get("compute-prevent-destroy"), bool):
         errors.append(":compute-prevent-destroy must be true or false")
 
@@ -328,28 +324,25 @@ def state_errors(opts: dict) -> list[str]:
     # addresses, which the firewall drops. The converge then succeeds, and the
     # first HTTPS request fails on a certificate that was never issued.
     # Proxied, the challenge arrives from a Cloudflare address and is admitted.
-    if (_s(opts.get("vultr-http-sources")) == "cloudflare"
+    if (compute.symbolic_http(opts)
             and opts.get("cloudflare-proxied") is not True):
-        errors.append(":vultr-http-sources cloudflare requires :cloudflare-proxied true, "
+        errors.append(":n8n-http-sources cloudflare requires :cloudflare-proxied true, "
                       "or ACME HTTP-01 is firewalled off and no certificate is ever issued")
 
     if not (missing(opts.get("r2-credential-sharing"))
             or _s(opts.get("r2-credential-sharing")) in ("split", "shared-accepted")):
         errors.append(":r2-credential-sharing must be split or shared-accepted")
 
-    os_id = opts.get("vultr-os-id")
-    if not (missing(os_id) or (isinstance(os_id, int) and not isinstance(os_id, bool))):
-        errors.append(":vultr-os-id must be Vultr's numeric operating-system id")
     return errors
 
 
 def backend_secrets(opts: dict) -> list[str]:
-    entry = once_providers["provider-backend"].get(str(opts.get("provider-backend")), {})
+    entry = registry()["backend"].get(str(opts.get("provider-backend")), {})
     return entry.get("secrets", [])
 
 
 # What talking to the providers needs, on any real event.
-provider_secrets = ["vultr-api-key", "cloudflare-api-token"]
+provider_secrets = ["cloudflare-api-token"]
 
 # What converging the machine needs, and therefore only a create.
 #
@@ -430,10 +423,9 @@ def secret_errors(opts: dict, event: str) -> list[str]:
 
 def tofu_env(opts: dict, slot: str) -> dict[str, str]:
     if slot == "provider-compute":
-        return {"vultr-api-key": "VULTR_API_KEY"}
+        return {}
     if slot == "provider-dns":
         return {"cloudflare-api-token": "CLOUDFLARE_API_TOKEN"}
-    if slot == "provider-backend":
-        entry = once_providers["provider-backend"].get(str(opts.get("provider-backend")), {})
-        return entry.get("tofu-env", {})
+    if slot == "provider-backend" and opts.get("provider-backend") == "r2":
+        return {"r2-access-key-id":"AWS_ACCESS_KEY_ID", "r2-secret-access-key":"AWS_SECRET_ACCESS_KEY"}
     return {}

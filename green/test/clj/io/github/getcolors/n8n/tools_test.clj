@@ -32,7 +32,7 @@
 
 (deftest http-sources-resolve-explicit-lists-verbatim
   (let [{:keys [source ranges]} (tools/http-sources
-                                 {:vultr-http-sources ["1.2.3.0/24" "::/0"]})]
+                                 {:provider-compute "vultr" :vultr-http-sources ["1.2.3.0/24" "::/0"]})]
     (is (= :explicit source))
     (is (= ["1.2.3.0/24" "::/0"] ranges))))
 

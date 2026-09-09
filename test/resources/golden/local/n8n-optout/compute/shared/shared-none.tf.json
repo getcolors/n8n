@@ -1,0 +1,368 @@
+{
+  "locals": {
+    "ingress": {
+      "ssh:0.0.0.0/0": {
+        "ip_type": "v4",
+        "port": "22",
+        "protocol": "tcp",
+        "subnet": "0.0.0.0",
+        "subnet_size": 0
+      },
+      "ssh:::/0": {
+        "ip_type": "v6",
+        "port": "22",
+        "protocol": "tcp",
+        "subnet": "::",
+        "subnet_size": 0
+      },
+      "web-443:103.21.244.0/22": {
+        "ip_type": "v4",
+        "port": "443",
+        "protocol": "tcp",
+        "subnet": "103.21.244.0",
+        "subnet_size": 22
+      },
+      "web-443:103.22.200.0/22": {
+        "ip_type": "v4",
+        "port": "443",
+        "protocol": "tcp",
+        "subnet": "103.22.200.0",
+        "subnet_size": 22
+      },
+      "web-443:103.31.4.0/22": {
+        "ip_type": "v4",
+        "port": "443",
+        "protocol": "tcp",
+        "subnet": "103.31.4.0",
+        "subnet_size": 22
+      },
+      "web-443:104.16.0.0/13": {
+        "ip_type": "v4",
+        "port": "443",
+        "protocol": "tcp",
+        "subnet": "104.16.0.0",
+        "subnet_size": 13
+      },
+      "web-443:104.24.0.0/14": {
+        "ip_type": "v4",
+        "port": "443",
+        "protocol": "tcp",
+        "subnet": "104.24.0.0",
+        "subnet_size": 14
+      },
+      "web-443:108.162.192.0/18": {
+        "ip_type": "v4",
+        "port": "443",
+        "protocol": "tcp",
+        "subnet": "108.162.192.0",
+        "subnet_size": 18
+      },
+      "web-443:131.0.72.0/22": {
+        "ip_type": "v4",
+        "port": "443",
+        "protocol": "tcp",
+        "subnet": "131.0.72.0",
+        "subnet_size": 22
+      },
+      "web-443:141.101.64.0/18": {
+        "ip_type": "v4",
+        "port": "443",
+        "protocol": "tcp",
+        "subnet": "141.101.64.0",
+        "subnet_size": 18
+      },
+      "web-443:162.158.0.0/15": {
+        "ip_type": "v4",
+        "port": "443",
+        "protocol": "tcp",
+        "subnet": "162.158.0.0",
+        "subnet_size": 15
+      },
+      "web-443:172.64.0.0/13": {
+        "ip_type": "v4",
+        "port": "443",
+        "protocol": "tcp",
+        "subnet": "172.64.0.0",
+        "subnet_size": 13
+      },
+      "web-443:173.245.48.0/20": {
+        "ip_type": "v4",
+        "port": "443",
+        "protocol": "tcp",
+        "subnet": "173.245.48.0",
+        "subnet_size": 20
+      },
+      "web-443:188.114.96.0/20": {
+        "ip_type": "v4",
+        "port": "443",
+        "protocol": "tcp",
+        "subnet": "188.114.96.0",
+        "subnet_size": 20
+      },
+      "web-443:190.93.240.0/20": {
+        "ip_type": "v4",
+        "port": "443",
+        "protocol": "tcp",
+        "subnet": "190.93.240.0",
+        "subnet_size": 20
+      },
+      "web-443:197.234.240.0/22": {
+        "ip_type": "v4",
+        "port": "443",
+        "protocol": "tcp",
+        "subnet": "197.234.240.0",
+        "subnet_size": 22
+      },
+      "web-443:198.41.128.0/17": {
+        "ip_type": "v4",
+        "port": "443",
+        "protocol": "tcp",
+        "subnet": "198.41.128.0",
+        "subnet_size": 17
+      },
+      "web-443:2400:cb00::/32": {
+        "ip_type": "v6",
+        "port": "443",
+        "protocol": "tcp",
+        "subnet": "2400:cb00::",
+        "subnet_size": 32
+      },
+      "web-443:2405:8100::/32": {
+        "ip_type": "v6",
+        "port": "443",
+        "protocol": "tcp",
+        "subnet": "2405:8100::",
+        "subnet_size": 32
+      },
+      "web-443:2405:b500::/32": {
+        "ip_type": "v6",
+        "port": "443",
+        "protocol": "tcp",
+        "subnet": "2405:b500::",
+        "subnet_size": 32
+      },
+      "web-443:2606:4700::/32": {
+        "ip_type": "v6",
+        "port": "443",
+        "protocol": "tcp",
+        "subnet": "2606:4700::",
+        "subnet_size": 32
+      },
+      "web-443:2803:f800::/32": {
+        "ip_type": "v6",
+        "port": "443",
+        "protocol": "tcp",
+        "subnet": "2803:f800::",
+        "subnet_size": 32
+      },
+      "web-443:2a06:98c0::/29": {
+        "ip_type": "v6",
+        "port": "443",
+        "protocol": "tcp",
+        "subnet": "2a06:98c0::",
+        "subnet_size": 29
+      },
+      "web-443:2c0f:f248::/32": {
+        "ip_type": "v6",
+        "port": "443",
+        "protocol": "tcp",
+        "subnet": "2c0f:f248::",
+        "subnet_size": 32
+      },
+      "web-80:103.21.244.0/22": {
+        "ip_type": "v4",
+        "port": "80",
+        "protocol": "tcp",
+        "subnet": "103.21.244.0",
+        "subnet_size": 22
+      },
+      "web-80:103.22.200.0/22": {
+        "ip_type": "v4",
+        "port": "80",
+        "protocol": "tcp",
+        "subnet": "103.22.200.0",
+        "subnet_size": 22
+      },
+      "web-80:103.31.4.0/22": {
+        "ip_type": "v4",
+        "port": "80",
+        "protocol": "tcp",
+        "subnet": "103.31.4.0",
+        "subnet_size": 22
+      },
+      "web-80:104.16.0.0/13": {
+        "ip_type": "v4",
+        "port": "80",
+        "protocol": "tcp",
+        "subnet": "104.16.0.0",
+        "subnet_size": 13
+      },
+      "web-80:104.24.0.0/14": {
+        "ip_type": "v4",
+        "port": "80",
+        "protocol": "tcp",
+        "subnet": "104.24.0.0",
+        "subnet_size": 14
+      },
+      "web-80:108.162.192.0/18": {
+        "ip_type": "v4",
+        "port": "80",
+        "protocol": "tcp",
+        "subnet": "108.162.192.0",
+        "subnet_size": 18
+      },
+      "web-80:131.0.72.0/22": {
+        "ip_type": "v4",
+        "port": "80",
+        "protocol": "tcp",
+        "subnet": "131.0.72.0",
+        "subnet_size": 22
+      },
+      "web-80:141.101.64.0/18": {
+        "ip_type": "v4",
+        "port": "80",
+        "protocol": "tcp",
+        "subnet": "141.101.64.0",
+        "subnet_size": 18
+      },
+      "web-80:162.158.0.0/15": {
+        "ip_type": "v4",
+        "port": "80",
+        "protocol": "tcp",
+        "subnet": "162.158.0.0",
+        "subnet_size": 15
+      },
+      "web-80:172.64.0.0/13": {
+        "ip_type": "v4",
+        "port": "80",
+        "protocol": "tcp",
+        "subnet": "172.64.0.0",
+        "subnet_size": 13
+      },
+      "web-80:173.245.48.0/20": {
+        "ip_type": "v4",
+        "port": "80",
+        "protocol": "tcp",
+        "subnet": "173.245.48.0",
+        "subnet_size": 20
+      },
+      "web-80:188.114.96.0/20": {
+        "ip_type": "v4",
+        "port": "80",
+        "protocol": "tcp",
+        "subnet": "188.114.96.0",
+        "subnet_size": 20
+      },
+      "web-80:190.93.240.0/20": {
+        "ip_type": "v4",
+        "port": "80",
+        "protocol": "tcp",
+        "subnet": "190.93.240.0",
+        "subnet_size": 20
+      },
+      "web-80:197.234.240.0/22": {
+        "ip_type": "v4",
+        "port": "80",
+        "protocol": "tcp",
+        "subnet": "197.234.240.0",
+        "subnet_size": 22
+      },
+      "web-80:198.41.128.0/17": {
+        "ip_type": "v4",
+        "port": "80",
+        "protocol": "tcp",
+        "subnet": "198.41.128.0",
+        "subnet_size": 17
+      },
+      "web-80:2400:cb00::/32": {
+        "ip_type": "v6",
+        "port": "80",
+        "protocol": "tcp",
+        "subnet": "2400:cb00::",
+        "subnet_size": 32
+      },
+      "web-80:2405:8100::/32": {
+        "ip_type": "v6",
+        "port": "80",
+        "protocol": "tcp",
+        "subnet": "2405:8100::",
+        "subnet_size": 32
+      },
+      "web-80:2405:b500::/32": {
+        "ip_type": "v6",
+        "port": "80",
+        "protocol": "tcp",
+        "subnet": "2405:b500::",
+        "subnet_size": 32
+      },
+      "web-80:2606:4700::/32": {
+        "ip_type": "v6",
+        "port": "80",
+        "protocol": "tcp",
+        "subnet": "2606:4700::",
+        "subnet_size": 32
+      },
+      "web-80:2803:f800::/32": {
+        "ip_type": "v6",
+        "port": "80",
+        "protocol": "tcp",
+        "subnet": "2803:f800::",
+        "subnet_size": 32
+      },
+      "web-80:2a06:98c0::/29": {
+        "ip_type": "v6",
+        "port": "80",
+        "protocol": "tcp",
+        "subnet": "2a06:98c0::",
+        "subnet_size": 29
+      },
+      "web-80:2c0f:f248::/32": {
+        "ip_type": "v6",
+        "port": "80",
+        "protocol": "tcp",
+        "subnet": "2c0f:f248::",
+        "subnet_size": 32
+      }
+    }
+  },
+  "output": {
+    "params": {
+      "value": {
+        "firewall_group_id": "${vultr_firewall_group.network.id}",
+        "provider": "vultr"
+      }
+    }
+  },
+  "provider": {
+    "vultr": {}
+  },
+  "resource": {
+    "vultr_firewall_group": {
+      "network": {
+        "description": "n8n-optout-firewall",
+        "lifecycle": {
+          "prevent_destroy": true
+        }
+      }
+    },
+    "vultr_firewall_rule": {
+      "ingress": {
+        "firewall_group_id": "${vultr_firewall_group.network.id}",
+        "for_each": "${local.ingress}",
+        "ip_type": "${each.value.ip_type}",
+        "port": "${each.value.port}",
+        "protocol": "${each.value.protocol}",
+        "subnet": "${each.value.subnet}",
+        "subnet_size": "${each.value.subnet_size}"
+      }
+    }
+  },
+  "terraform": {
+    "required_providers": {
+      "vultr": {
+        "source": "vultr/vultr",
+        "version": "2.32.0"
+      }
+    }
+  }
+}

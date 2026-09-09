@@ -34,7 +34,7 @@ def test_a_complete_desired_state_validates():
 def test_reports_every_problem_at_once():
     # Exit code 2 lists all problems; a validator that stops at the first makes
     # a fresh colors.yml a guessing game.
-    assert len(errs({"neon-pg-version": 12, "n8n-port": None, "vultr-os-id": "x"})) >= 3
+    assert len(errs({"neon-pg-version": 12, "n8n-port": None, "vultr-plan": None})) >= 3
 
 
 def test_the_machine_key_is_not_required_and_its_absence_selects_keygen():

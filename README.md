@@ -111,3 +111,5 @@ cd green && bb pin         # stamp all three launchers after a push
 ## Licence
 
 MIT.
+
+Compute lifecycle and remote state are delegated to `colors-compute`; the package keeps its Neon+n8n application templates, DNS stage, credential-scope checks, and acceptance gates. Compute requires R2 or S3 and owns `<profile>/compute/{shared,nodes/0}.tfstate` plus a journal. Legacy `<profile>/n8n-infrastructure.tfstate` is refused for explicit migration. The package owns its locked SSH alias updater; it removes the alias before compute destruction and writes IdentityFile only for managed keys. External private paths are passed explicitly to Ansible and acceptance SSH. Build and dry-run do not read local SSH files.

@@ -25,8 +25,7 @@ def test_delete_removes_dns_and_the_config_block_before_the_destroy():
 
     assert step("n8n/ssh-config")[1] == "n8n/dns"
     assert step("n8n/dns")[1] == "n8n/infrastructure"
-    assert step("n8n/infrastructure")[1] == "n8n/ssh-cleanup"
-    assert len(step("n8n/ssh-cleanup")) == 1
+    assert len(step("n8n/infrastructure")) == 1
 
 
 def test_both_tofu_stages_carry_their_own_backend_key():

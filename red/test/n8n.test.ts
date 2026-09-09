@@ -38,7 +38,7 @@ describe("validate", () => {
   test("reports every problem at once", () => {
     // Exit code 2 lists all problems; a validator that stops at the first
     // makes a fresh colors.yml a guessing game.
-    expect(errs({ "neon-pg-version": 12, "n8n-port": null, "vultr-os-id": "x" }).length)
+    expect(errs({ "neon-pg-version": 12, "n8n-port": null, "vultr-plan": null }).length)
       .toBeGreaterThanOrEqual(3);
   });
 
@@ -108,7 +108,7 @@ describe("validate", () => {
     expect(has({ "cloudflare-proxied": false }, "ACME HTTP-01")).toBe(true);
     expect(errs({ "cloudflare-proxied": true })).toEqual([]);
     // An explicit range list is unaffected by the rule.
-    expect(errs({ "vultr-http-sources": ["1.2.3.0/24"], "cloudflare-proxied": false }))
+    expect(errs({ "provider-compute":"vultr", "vultr-http-sources": ["1.2.3.0/24"], "cloudflare-proxied": false }))
       .toEqual([]);
   });
 
@@ -261,9 +261,9 @@ describe("tools", () => {
     // Writing our own dropped its `<% if ssh-keygen %> private_key_file`
     // conditional, and the deployment then had no identity to offer.
     for (const spec of tools.ansibleLocalSpecs(fixture())) {
-      expect((spec.template as { name: string }).name.startsWith("neon/ansible-local/")).toBe(true);
+      expect((spec.template as { name: string }).name.startsWith("ansible-local/")).toBe(true);
     }
-    expect(existsSync(join(import.meta.dir, "../resources/tools/ansible-local"))).toBe(false);
+    expect(existsSync(join(import.meta.dir, "../resources/tools/ansible-local"))).toBe(true);
   });
 
   test("the inventory places one host in both groups", () => {
@@ -281,7 +281,7 @@ describe("tools", () => {
   });
 
   test("http sources resolve explicit lists verbatim", async () => {
-    const resolved = await tools.httpSources({ "vultr-http-sources": ["1.2.3.0/24", "::/0"] });
+    const resolved = await tools.httpSources({ "provider-compute":"vultr", "vultr-http-sources": ["1.2.3.0/24", "::/0"] });
     expect(resolved.source).toBe("explicit");
     expect(resolved.ranges).toEqual(["1.2.3.0/24", "::/0"]);
   });
@@ -328,7 +328,7 @@ describe("workflow", () => {
     expect(deleteGraph("n8n/ssh-config")?.[1]).toBe("n8n/dns");
     expect(deleteGraph("n8n/dns")?.[1]).toBe("n8n/infrastructure");
     // The keypair goes after the compute destroy, the config block before it.
-    expect(deleteGraph("n8n/infrastructure")?.[1]).toBe("n8n/ssh-cleanup");
+    expect(deleteGraph("n8n/infrastructure")?.length).toBe(1);
   });
 
   test("both tofu stages carry their own backend key", () => {

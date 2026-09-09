@@ -61,7 +61,7 @@
 (deftest reports-every-problem-at-once
   (testing "exit code 2 lists all problems; a validator that stops at the first
             makes a fresh colors.yml a guessing game"
-    (is (<= 3 (count (errs {:neon-pg-version 12 :n8n-port nil :vultr-os-id "x"}))))))
+    (is (<= 3 (count (errs {:neon-pg-version 12 :n8n-port nil :vultr-plan nil}))))))
 
 ;; --- version-specific regressions -----------------------------------------
 

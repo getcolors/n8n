@@ -22,7 +22,7 @@ from pathlib import Path
 def host_alias(opts: dict) -> str:
     """The profile, unchanged. Standard §2: the profile already keys remote
     state, which is what makes it unique enough to name a host by."""
-    return opts.get("profile") or "neon"
+    return opts.get("profile") or "n8n"
 
 
 def identity_file(opts: dict) -> str:
@@ -60,7 +60,7 @@ def owned_markers(alias: str) -> dict:
 
 def host_patterns(line: str) -> list[str] | None:
     """The patterns a `Host` line declares, or None when the line is not one."""
-    match = re.fullmatch(r"(?i)\s*Host\s+(.*?)\s*", str(line))
+    match = re.fullmatch(r"(?i)\s*Host(?:\s*=\s*|\s+)(.*?)\s*", str(line))
     if not match:
         return None
     return [p for p in re.split(r"\s+", match.group(1)) if p.strip()]
@@ -95,7 +95,7 @@ def leading_option_line(lines: list) -> int | None:
         trimmed = str(line).strip()
         if not trimmed or trimmed.startswith("#"):
             continue
-        if re.fullmatch(r"(?i)\s*(Host|Match)\s+.*", str(line)):
+        if re.fullmatch(r"(?i)\s*(Host|Match)(?:\s*=\s*|\s+).*", str(line)):
             return None
         return n
     return None

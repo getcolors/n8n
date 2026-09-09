@@ -7,9 +7,10 @@
 # every one of them. Runs against whatever `build` last rendered.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-[ -d .colors ] || { echo "no .colors/ -- run 'cd green && ./green build' first" >&2; exit 1; }
+render_root=${1:-.colors}
+[ -d "$render_root" ] || { echo "no .colors/ -- run 'cd green && ./green build' first" >&2; exit 1; }
 rc=0
-for inv in $(find .colors -name inventory.json); do
+while IFS= read -r inv; do
   dir=$(dirname "$inv")
   for pb in site.yml cleanup.yml; do
     [ -f "$dir/$pb" ] || continue
@@ -21,5 +22,5 @@ for inv in $(find .colors -name inventory.json); do
       rc=1
     fi
   done
-done
+done < <(rg --files "$render_root" | rg '(^|/)inventory\.json$')
 exit "$rc"

@@ -19,7 +19,7 @@ import type { Opts } from "red/workflow";
 // The profile, unchanged. Standard §2: the profile already keys remote state,
 // which is what makes it unique enough to name a host by.
 export function hostAlias(opts: Opts): string {
-  return String(opts.profile ?? "neon");
+  return String(opts.profile || "n8n");
 }
 
 // `~/.ssh/<profile>`, written with a literal tilde rather than an expanded
@@ -56,7 +56,7 @@ export function ownedMarkers(alias: string): { begin: Set<string>; end: Set<stri
 
 // The patterns a `Host` line declares, or undefined when the line is not one.
 export function hostPatterns(line: string): string[] | undefined {
-  const match = /^\s*Host\s+(.*?)\s*$/i.exec(line);
+  const match = /^\s*Host(?:\s*=\s*|\s+)(.*?)\s*$/i.exec(line);
   if (!match) return undefined;
   return match[1]!.split(/\s+/).filter((pattern) => pattern.length > 0);
 }
@@ -87,7 +87,7 @@ export function leadingOptionLine(lines: string[]): number | undefined {
   for (let i = 0; i < lines.length; i += 1) {
     const trimmed = String(lines[i]).trim();
     if (trimmed === "" || trimmed.startsWith("#")) continue;
-    if (/^\s*(Host|Match)\s+.*/i.test(lines[i]!)) return undefined;
+    if (/^\s*(Host|Match)(?:\s*=\s*|\s+).*/i.test(lines[i]!)) return undefined;
     return i + 1;
   }
   return undefined;

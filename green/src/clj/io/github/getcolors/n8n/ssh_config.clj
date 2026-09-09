@@ -18,7 +18,7 @@
   "The profile, unchanged. Standard §2: the profile already keys remote state,
   which is what makes it unique enough to name a host by."
   [opts]
-  (or (:profile opts) "neon"))
+  (or (:profile opts) "n8n"))
 
 (defn identity-file
   "`~/.ssh/<profile>`, written with a literal tilde rather than an expanded
@@ -28,7 +28,10 @@
   (str "~/.ssh/" (host-alias opts)))
 
 (defn config-path []
-  (io/file (System/getProperty "user.home") ".ssh" "config"))
+  ;; $HOME first, the way the local play's `~` and the red and blue twins
+  ;; resolve it, so the preflight reads the file Ansible will edit; the JVM's
+  ;; user.home comes from the passwd entry and can differ.
+  (io/file (or (not-empty (System/getenv "HOME")) (System/getProperty "user.home")) ".ssh" "config"))
 
 ;; The alias alone. A profile is `<package>-<suffix>`, so it already names the
 ;; package, and two packages sharing one profile would be fighting over
@@ -50,7 +53,7 @@
 (defn host-patterns
   "The patterns a `Host` line declares, or nil when the line is not one."
   [line]
-  (when-let [[_ rest] (re-matches #"(?i)\s*Host\s+(.*?)\s*" line)]
+  (when-let [[_ rest] (re-matches #"(?i)\s*Host(?:\s*=\s*|\s+)(.*?)\s*" line)]
     (remove str/blank? (str/split rest #"\s+"))))
 
 (defn foreign-stanza-line
@@ -80,7 +83,7 @@
       (cond
         (nil? line) nil
         (or (str/blank? trimmed) (str/starts-with? trimmed "#")) (recur more (inc n))
-        (re-matches #"(?i)\s*(Host|Match)\s+.*" line) nil
+        (re-matches #"(?i)\s*(Host|Match)(?:\s*=\s*|\s+).*" line) nil
         :else n))))
 
 (defn adopt-error
