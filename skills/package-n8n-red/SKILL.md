@@ -137,3 +137,5 @@ read back to test decryption, only used.
 See [references/configuration.md](references/configuration.md).
 
 Compute lifecycle and remote state are delegated to `colors-compute`; the package keeps its Neon+n8n application templates, DNS stage, credential-scope checks, and acceptance gates. Compute requires R2 or S3 and owns `<profile>/compute/{shared,nodes/0}.tfstate` plus a journal. Legacy `<profile>/n8n-infrastructure.tfstate` is refused for explicit migration. The package owns its locked SSH alias updater; it removes the alias before compute destruction and writes IdentityFile only for managed keys. External private paths are passed explicitly to Ansible and acceptance SSH. Build and dry-run do not read local SSH files.
+
+Validated retired compute prevents remote Ansible during delete even when caller input retains a stale IP or private-key path. Remaining application and local cleanup keeps its existing ordering. Normal creation still converges the application.

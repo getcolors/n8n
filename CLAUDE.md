@@ -131,3 +131,5 @@ The package depends on `colors-compute` at `3451a05e719b0ad6809f3c88b241a8c010b8
 Create runs compute, DNS, profile SSH alias, application convergence, then acceptance. Delete first inspects owned compute, stops the application, removes the alias, removes DNS, then destroys compute. The library manages generated keys and registration cleanup. External private paths are explicit Ansible and acceptance SSH inputs. Managed aliases add `IdentityFile ~/.ssh/<profile>`; external aliases do not.
 
 The neutral `n8n-ssh-sources` and `n8n-http-sources` options take precedence over library-resolved legacy provider options. The symbolic HTTP value `cloudflare` retains the fetched ranges and checksum report. A real create refuses a failed fetch; build can use the reviewed fallback. No cloud resources were created while validating this migration.
+
+Validated retired compute prevents remote Ansible during delete even when caller input retains a stale IP or private-key path. Remaining application and local cleanup keeps its existing ordering. Normal creation still converges the application.

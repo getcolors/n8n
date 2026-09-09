@@ -391,7 +391,7 @@ export async function dnsStep(opts: Opts): Promise<Opts> {
 
 export async function ansibleStep(opts: Opts): Promise<Opts> {
   const dir = toolDir(opts, ansibleTool);
-  if (opts["red/event"] === "delete" && !opts.ip) {
+  if (opts["red/event"] === "delete" && (opts["n8n/already-destroyed"] || !opts.ip)) {
     // No compute in state: there is no host to stop, and the cleanup play
     // would only fail against the placeholder address.
     return { ...opts, "red/exit": 0 };

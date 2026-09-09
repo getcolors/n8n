@@ -60,3 +60,13 @@
       (is (= "n8n.example.com" (:name body)))
       (is (= 1 (:ttl body)))
       (is (true? (:proxied body))))))
+
+(deftest retired-delete-never-uses-stale-host
+ (require '[green.ansible :as retired-ansible])
+ (doseq [event [:create :delete] retired [true false]]
+  (let [calls (atom 0)]
+   (with-redefs-fn {(resolve 'io.github.getcolors.n8n.tools/ansible-specs) (constantly [])
+                   (resolve 'retired-ansible/ansible-with-spec) (fn [opts & _] (swap! calls inc) (assoc opts :green/exit 0))}
+    (fn [] (let [result (tools/ansible-step {:profile "test" :workdir "/tmp/unused-retired-test" :green/event event :n8n/already-destroyed retired :ip "203.0.113.19" :ssh-private-key-path "/tmp/removed-key"})]
+             (is (= 0 (:green/exit result)))
+             (is (= (if (and (= event :delete) retired) 0 1) @calls))))))))
