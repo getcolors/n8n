@@ -1,0 +1,15 @@
+# The whole convergence, in two plays against one host.
+#
+# The host is in both the `neon` and the `n8n` inventory groups. The first play
+# is getcolors/neon's own main.yml, rendered unchanged from the pinned
+# dependency into neon/ beside this file -- not copied into this package, and
+# not edited. The second play is this package's.
+#
+# Order is not cosmetic. The Neon play must fully converge, and its handlers
+# must be flushed, before the n8n play installs the Compose overlay: the
+# overlay's `n8n` service declares `depends_on: compute: service_healthy`, and
+# a half-built storage tier would either block the overlay or bring n8n up
+# against a compute node that is about to be recreated underneath it.
+- import_playbook: neon/main.yml
+
+- import_playbook: n8n.yml

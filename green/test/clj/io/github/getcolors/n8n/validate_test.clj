@@ -51,6 +51,23 @@
    :n8n-soak-min-executions-completed 500
    :n8n-soak-max-host-memory-percent 85 :n8n-soak-max-disk-percent 80})
 
+(def aws
+  "The same deployment on AWS with an S3 state bucket: no vultr-* or r2-*
+  keys, native S3 endpoints in the neon-* vocabulary, IPv4 sources only."
+  (-> base
+      (dissoc :vultr-region :vultr-plan :vultr-os-id :vultr-ssh-sources :vultr-http-sources
+              :r2-bucket :r2-endpoint)
+      (assoc :provider-compute "aws" :provider-backend "s3"
+             :s3-bucket "n8n-test-state-123456789012-us-east-1" :s3-region "us-east-1"
+             :s3-bucket-mode "managed"
+             :neon-r2-bucket "n8n-test-neon-123456789012-us-east-1"
+             :neon-r2-endpoint "https://s3.us-east-1.amazonaws.com" :neon-r2-region "us-east-1"
+             :n8n-backup-r2-bucket "n8n-test-backup-123456789012-us-east-1"
+             :aws-region "us-east-1" :aws-availability-zone "us-east-1a"
+             :aws-image-id "ami-025d99823a4caad37" :aws-instance-type "t3.xlarge"
+             :aws-root-volume-size-gb 60 :aws-vpc-cidr "10.76.0.0/16" :aws-subnet-cidr "10.76.1.0/24"
+             :n8n-ssh-sources ["0.0.0.0/0"] :n8n-http-sources "cloudflare")))
+
 (defn errs-state [m] (v/state-errors (merge base m)))
 (defn errs [m] (v/state-errors (merge base m)))
 (defn has? [m needle] (boolean (some #(re-find (re-pattern needle) %) (errs m))))
@@ -197,6 +214,44 @@
                         (v/secret-errors (merge base creds
                                                 {:n8n-encryption-key (apply str (repeat 32 "a"))})
                                          :create))))))
+
+;; --- the second compute provider -------------------------------------------
+
+(deftest backend-keys-follow-the-selected-backend
+  (testing "r2 names a bucket and an endpoint; s3 a bucket and a region. The
+            old validator required r2-bucket unconditionally, so an S3 desired
+            state could never validate"
+    (is (empty? (v/state-errors aws)))
+    (is (has? {:r2-bucket nil} ":r2-bucket is required"))
+    (is (some #(= ":s3-bucket is required" %) (v/state-errors (dissoc aws :s3-bucket))))
+    (is (some #(= ":s3-region is required" %) (v/state-errors (dissoc aws :s3-region))))
+    (is (not-any? #(re-find #":r2-" %) (v/state-errors aws)))
+    (is (not-any? #(re-find #":s3-" %) (errs {})))))
+
+(deftest the-state-bucket-rule-follows-the-selected-backend
+  (is (some #(= ":neon-r2-bucket must not be the OpenTofu state bucket" %)
+            (v/state-errors (assoc aws :neon-r2-bucket (:s3-bucket aws)))))
+  (is (some #(= ":n8n-backup-r2-bucket must not be the state or live-data bucket" %)
+            (v/state-errors (assoc aws :n8n-backup-r2-bucket (:s3-bucket aws))))))
+
+(deftest the-managed-state-bucket-mode-is-validated
+  (is (has? {:s3-bucket-mode "adopt"} "must be external or managed"))
+  (is (has? {:s3-bucket-mode "managed"} "requires :provider-backend s3"))
+  (is (empty? (v/state-errors (assoc aws :s3-bucket-mode "external")))))
+
+(deftest the-backup-endpoint-and-region-default-to-neon-s
+  (testing "existing R2 desired state carries neither key and keeps rendering
+            the same remote"
+    (is (= (:neon-r2-endpoint base) (v/backup-endpoint base)))
+    (is (= "auto" (v/backup-region base)))
+    (is (= "https://backup.example" (v/backup-endpoint (assoc base :n8n-backup-r2-endpoint "https://backup.example"))))
+    (is (= "eu-west-1" (v/backup-region (assoc base :n8n-backup-r2-region "eu-west-1"))))
+    (is (= (:neon-r2-endpoint base) (v/backup-endpoint (assoc base :n8n-backup-r2-endpoint ""))))
+    (is (has? {:n8n-backup-r2-endpoint "ftp://nope"} ":n8n-backup-r2-endpoint must be an https URL"))))
+
+(deftest the-cloudflare-rule-holds-on-both-providers
+  (is (some #(re-find #"ACME HTTP-01" %) (v/state-errors (assoc aws :cloudflare-proxied false))))
+  (is (empty? (v/state-errors (assoc aws :n8n-http-sources ["1.2.3.0/24"] :cloudflare-proxied false)))))
 
 (deftest profile-may-not-be-overlaid-from-the-environment
   (is (seq (v/env-errors {v/profile-par "somewhere-else"})))

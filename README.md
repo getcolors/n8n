@@ -1,9 +1,10 @@
 # n8n
 
 A tri-colour Package Skill (green, red, blue) that provisions **n8n workflow
-automation on one Vultr instance, backed by a colocated self-hosted Neon** — storage/compute-separated
-Postgres whose layers and WAL live in Cloudflare R2 — behind Caddy TLS, with
-n8n's Code nodes isolated in an external task runner.
+automation on one Vultr instance or one AWS EC2 instance, backed by a
+colocated self-hosted Neon**, a storage/compute-separated Postgres whose layers
+and WAL live in Cloudflare R2 or Amazon S3, behind Caddy TLS, with n8n's Code
+nodes isolated in an external task runner.
 
 n8n is normally run on SQLite (fine until two workflows finish at once) or on a
 colocated Postgres. This runs it on Neon instead, which means the database's
@@ -59,6 +60,37 @@ intention: both fixtures through all three colours, diffed byte for byte.
 `colors.yml` is the only file you edit. Exit code 2 lists every validation
 problem at once.
 
+## AWS with managed S3 storage
+
+`provider-compute: aws` provisions one EC2 instance through the colors-compute
+AWS adapter, in its own VPC, subnet, and security group, with the profile-named
+regional keypair and Ubuntu's `ubuntu` login. `provider-backend: s3` keeps
+OpenTofu state in S3, and `s3-bucket-mode: managed` makes that bucket the
+deployment's own: created before the first state read, finalized after an
+authorized delete has destroyed everything else.
+
+`n8n-storage-managed: true` adds an `n8n-storage` OpenTofu stage between
+compute and DNS. It creates the Neon bucket and the backup bucket, each with a
+public-access block, AES256 encryption, and one IAM user whose policy reaches
+that bucket alone, and it refuses to adopt a bucket that already exists. The
+two access keys come out of the stage's sensitive output and reach the
+converge as `COLORS_PAR_NEON_R2_*` and `COLORS_PAR_N8N_BACKUP_R2_*` in the
+Ansible subprocess environment only. Nothing renders them and the operator
+never holds them, so the three-credential rule below is satisfied by
+construction and `r2-credential-sharing` is not required.
+
+The `*-r2-*` keys keep their names on AWS, because they are the vocabulary of
+the `getcolors/neon` templates this package renders; they carry the regional
+S3 endpoint and region. AWS credentials come from the ambient chain: the
+deployment's `.envrc` maps `COLORS_PAR_AWS_ACCESS_KEY_ID` and
+`COLORS_PAR_AWS_SECRET_ACCESS_KEY` onto `AWS_*`.
+
+Delete on AWS runs the stages in reverse: stop the host, remove the SSH alias
+and the DNS record, empty and remove the two application buckets and their
+IAM users, destroy compute, then finalize the state bucket. On R2 desired
+state, delete leaves every bucket untouched; on managed S3 the destruction
+override authorizes removing the Neon data and every backup set too.
+
 ## No second copy of the storage tier
 
 The Neon tier is not reimplemented here. This package SHA-pins
@@ -84,7 +116,7 @@ reviewable diff instead of a surprise on a host.
 
 ## Recovery, stated honestly
 
-Neon uploads WAL to R2 continuously, but a **rebuilt safekeeper does not recover
+Neon uploads WAL to the Neon bucket continuously, but a **rebuilt safekeeper does not recover
 its offloaded WAL**; the walproposer bootstraps it from the compute basebackup.
 A destroyed host therefore falls back to the logical backup set, and the backup
 *interval* is the RPO — six hours by default.
@@ -95,14 +127,22 @@ execute a workflow whose node carries a stored credential. That last step is the
 only way to prove the encryption key survived — n8n redacts credential values in
 API responses, so reading one back and comparing can never work.
 
+The backup set lives in its own bucket, reached through its own rclone remote
+with its own credential. `n8n-backup-r2-endpoint` and `n8n-backup-r2-region`
+default to the Neon bucket's, so an R2 deployment carries neither key; on AWS
+both name the regional S3 endpoint. The converge refuses an empty backup
+credential unless `r2-credential-sharing: shared-accepted` is recorded, and
+when the credential is its own the smoke gate proves it cannot list the Neon
+bucket.
+
 ## Tests
 
 ```sh
 cd green && bb test                        # validator and rendering rules
 cd red   && bun test && bun run typecheck
 cd blue  && uv run pytest
-./scripts/golden.sh        # green, both SSH-keypair modes, byte for byte
-./scripts/parity.sh        # three colours, two fixtures, byte for byte
+./scripts/golden.sh        # green: both SSH-keypair modes on Vultr, and AWS with managed S3
+./scripts/parity.sh        # three colours, three fixtures, byte for byte
 ./scripts/launcher.sh      # the three payloads, and green end to end from a copy
 ./scripts/syntax.sh        # ansible-playbook --syntax-check on the rendered tree
 cd green && bb pin         # stamp all three launchers after a push
@@ -112,4 +152,4 @@ cd green && bb pin         # stamp all three launchers after a push
 
 MIT.
 
-Compute lifecycle and remote state are delegated to `colors-compute`; the package keeps its Neon+n8n application templates, DNS stage, credential-scope checks, and acceptance gates. Compute requires R2 or S3 and owns `<profile>/compute/{shared,nodes/0}.tfstate` plus a journal. Legacy `<profile>/n8n-infrastructure.tfstate` is refused for explicit migration. The package owns its locked SSH alias updater; it removes the alias before compute destruction and writes IdentityFile only for managed keys. External private paths are passed explicitly to Ansible and acceptance SSH. Build and dry-run do not read local SSH files.
+Compute lifecycle and remote state are delegated to `colors-compute`; the package keeps its Neon+n8n application templates, DNS stage, storage stage, credential-scope checks, and acceptance gates. Compute runs on Vultr or AWS, requires R2 or S3, and owns `<profile>/compute/{shared,nodes/0}.tfstate` plus a journal. Legacy `<profile>/n8n-infrastructure.tfstate` is refused for explicit migration. The package owns its locked SSH alias updater; it removes the alias before compute destruction and writes IdentityFile only for managed keys. External private paths are passed explicitly to Ansible and acceptance SSH. Build and dry-run do not read local SSH files.

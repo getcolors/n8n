@@ -44,14 +44,14 @@ echo "  seeded: $seed"
 
 # 2. Take a backup set that contains it.
 /opt/neon/n8n-backup.sh >/dev/null 2>&1
-STAMP=$(rclone lsf "r2:$BACKUP_BUCKET/n8n-fixture/" 2>/dev/null \
+STAMP=$(rclone lsf "backup:$BACKUP_BUCKET/n8n-fixture/" 2>/dev/null \
         | grep -E '^[0-9]{8}T[0-9]{6}Z/$' | sort | tail -1 | tr -d '/')
 [ -n "$STAMP" ] || { echo "no backup set found" >&2; exit 1; }
 echo "  backup set: $STAMP"
 
 WORK=$(mktemp -d /var/tmp/n8n-rehearse.XXXXXX)
 for f in n8n.dump n8n-data.tar.gz manifest.txt; do
-  rclone copyto "r2:$BACKUP_BUCKET/n8n-fixture/$STAMP/$f" "$WORK/$f" 2>/dev/null
+  rclone copyto "backup:$BACKUP_BUCKET/n8n-fixture/$STAMP/$f" "$WORK/$f" 2>/dev/null
 done
 # shellcheck disable=SC1090
 . "$WORK/manifest.txt"

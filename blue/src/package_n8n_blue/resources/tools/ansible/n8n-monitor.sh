@@ -43,7 +43,7 @@ docker compose logs --since 30m n8n-runners 2>/dev/null | grep -qi 'error\|disco
 # any restart, so it is not usable as a converge-time threshold -- object
 # recency under the deployment's own prefix is.
 newest=$(rclone lsjson --recursive \
-  "r2:$NEON_BUCKET/$NEON_PREFIX/safekeeper/" 2>/dev/null \
+  "store:$NEON_BUCKET/$NEON_PREFIX/safekeeper/" 2>/dev/null \
   | python3 -c 'import json,sys
 try: xs=json.load(sys.stdin)
 except Exception: xs=[]
@@ -52,7 +52,7 @@ print(max((x["ModTime"] for x in xs), default=""))' 2>/dev/null || echo "")
 
 if [ "$fail" -eq 0 ]; then
   # copyto, never rcat: rcat is NotImplemented (501) against R2.
-  r2_put_string "ok $(date -u +%Y%m%dT%H%M%SZ)" \
+  backup_put_string "ok $(date -u +%Y%m%dT%H%M%SZ)" \
     "$BACKUP_BUCKET/<{ profile }>/heartbeat" 2>/dev/null \
     || echo "n8n-monitor: heartbeat upload failed" >&2
   echo "n8n-monitor: ok"

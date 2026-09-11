@@ -38,9 +38,39 @@
    :n8n-backup-r2-bucket :n8n-backup-oncalendar :n8n-backup-retention-days
    :n8n-backup-dir
    ;; public name and TLS
-   :cloudflare-zone :cloudflare-record-name :cloudflare-proxied
-   ;; compute
-   :r2-bucket :r2-endpoint])
+   :cloudflare-zone :cloudflare-record-name :cloudflare-proxied])
+
+(defn backend-required
+  "The state backend's own keys, by `provider-backend`. `r2` names a bucket
+  and an endpoint; `s3` names a bucket and a region."
+  [opts]
+  (case (:provider-backend opts) "s3" [:s3-bucket :s3-region] "r2" [:r2-bucket :r2-endpoint] []))
+
+(defn state-bucket-key
+  "Which key names the OpenTofu state bucket under the selected backend."
+  [opts]
+  (if (= "s3" (:provider-backend opts)) :s3-bucket :r2-bucket))
+
+(defn storage-managed?
+  "Whether this deployment mints its own S3 buckets and bucket-scoped
+  credentials instead of taking operator-held pairs."
+  [opts]
+  (true? (:n8n-storage-managed opts)))
+
+(defn backup-endpoint
+  "The backup bucket's endpoint: `n8n-backup-r2-endpoint`, or the Neon
+  endpoint when the key is absent, so desired state written for one bucket
+  provider keeps working with no edit."
+  [opts]
+  (let [v (:n8n-backup-r2-endpoint opts)] (if (or (nil? v) (and (string? v) (str/blank? v))) (:neon-r2-endpoint opts) v)))
+
+(defn backup-region
+  "The backup bucket's region, defaulting to `neon-r2-region` the same way."
+  [opts]
+  (let [v (:n8n-backup-r2-region opts)] (if (or (nil? v) (and (string? v) (str/blank? v))) (:neon-r2-region opts) v)))
+
+(def aws-region-re #"[a-z]{2}(?:-[a-z]+)+-\d+")
+(def bucket-name-re #"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")
 
 (def image-keys [:neon-image :neon-compute-image :n8n-image :n8n-runners-image
                  :caddy-image])
@@ -119,8 +149,9 @@
 
 (defn state-errors [opts]
   (vec
+   (distinct
    (concat
-    (for [k required :when (missing? (get opts k))] (str k " is required"))
+    (for [k (concat required (backend-required opts)) :when (missing? (get opts k))] (str k " is required"))
     (for [k soak-keys :when (missing? (get opts k))] (str k " is required"))
 
     (compute/errors opts)
@@ -128,6 +159,24 @@
       [":provider-dns must be cloudflare"])
     (when-not (boolean? (:compute-prevent-destroy opts))
       [":compute-prevent-destroy must be true or false"])
+
+    ;; --- state bucket ownership and managed storage ---------------------------
+    (when-not (or (missing? (:s3-bucket-mode opts))
+                  (contains? #{"external" "managed"} (str (:s3-bucket-mode opts))))
+      [":s3-bucket-mode must be external or managed"])
+    (when (and (= "managed" (str (:s3-bucket-mode opts))) (not= "s3" (:provider-backend opts)))
+      [":s3-bucket-mode managed requires :provider-backend s3"])
+    (when (and (contains? opts :n8n-storage-managed) (not (boolean? (:n8n-storage-managed opts))))
+      [":n8n-storage-managed must be true or false"])
+    (when (storage-managed? opts)
+      (concat
+       (when-not (= "aws" (:provider-compute opts)) ["managed storage requires :provider-compute aws"])
+       (when-not (= "s3" (:provider-backend opts)) ["managed storage requires :provider-backend s3"])
+       (when-not (re-matches aws-region-re (str (:neon-r2-region opts))) ["managed storage requires an AWS region in :neon-r2-region"])
+       (when-not (= (:neon-r2-region opts) (backup-region opts)) ["managed storage bucket regions must match"])
+       (for [k [:neon-r2-bucket :n8n-backup-r2-bucket]
+             :when (not (re-matches bucket-name-re (str (get opts k))))]
+         (str k " must be a valid S3 bucket name"))))
 
     ;; --- images ------------------------------------------------------------
     (for [k image-keys
@@ -163,7 +212,7 @@
       (str k " must be a lowercase identifier"))
     (when (= "cloud_admin" (str (:neon-role opts)))
       [":neon-role must not be cloud_admin"])
-    (for [k [:neon-r2-endpoint]
+    (for [k [:neon-r2-endpoint :n8n-backup-r2-endpoint :r2-endpoint]
           :when (and (not (missing? (get opts k)))
                      (not (re-matches url-re (str (get opts k)))))]
       (str k " must be an https URL"))
@@ -171,14 +220,14 @@
     ;; put data inside the state bucket as a bootstrap deviation; repeating it
     ;; here would mean one lifecycle mistake could take out both.
     (when (and (not (missing? (:neon-r2-bucket opts)))
-               (= (str (:neon-r2-bucket opts)) (str (:r2-bucket opts))))
+               (= (str (:neon-r2-bucket opts)) (str (get opts (state-bucket-key opts)))))
       [":neon-r2-bucket must not be the OpenTofu state bucket"])
     ;; hash-set, not the #{} literal: when the two buckets are equal -- exactly
     ;; the misconfiguration this rule exists to catch -- a set literal with
     ;; duplicate values throws IllegalArgumentException at runtime, so the
     ;; validator crashed instead of reporting the problem it had found.
     (when (and (not (missing? (:n8n-backup-r2-bucket opts)))
-               (contains? (hash-set (str (:r2-bucket opts)) (str (:neon-r2-bucket opts)))
+               (contains? (hash-set (str (get opts (state-bucket-key opts))) (str (:neon-r2-bucket opts)))
                           (str (:n8n-backup-r2-bucket opts))))
       [":n8n-backup-r2-bucket must not be the state or live-data bucket"])
 
@@ -278,7 +327,7 @@
                   (contains? #{"split" "shared-accepted"} (str (:r2-credential-sharing opts))))
       [":r2-credential-sharing must be split or shared-accepted"])
 
-)))
+))))
 
 (defn backend-secrets [opts]
   (:secrets (get-in library/registry
@@ -316,15 +365,20 @@
 
 (defn secret-errors
   "Credentials a real event needs. A delete tears down infrastructure and never
-  converges anything, so it asks for the provider credentials only."
+  converges anything, so it asks for the provider credentials only.
+
+  With `n8n-storage-managed: true` the two bucket pairs are minted by the
+  storage stage and scoped to one bucket each by construction, so neither the
+  operator pairs nor the credential-sharing gate apply."
   [opts event]
-  (let [ks (concat provider-secrets
+  (let [create? (and (= :create event) (not (storage-managed? opts)))
+        ks (concat provider-secrets
                    (when (= :create event) application-secrets)
                    (backend-secrets opts))]
     (concat
      (for [k (distinct ks) :when (missing? (get opts k))]
        (str "required credential is not set: " (green-cli/par-name k)))
-     (when (= :create event) (r2-secret-errors opts))
+     (when create? (r2-secret-errors opts))
      ;; Blast radius, enforced rather than merely observed.
      ;;
      ;; This package already refuses to let backups share a BUCKET with state
@@ -341,7 +395,7 @@
      ;; The shared pair stays reachable, because a first converge may predate
      ;; the scoped tokens -- but only as a DELIBERATE, committed choice that
      ;; shows up in a colors.yml diff, never as a silent default.
-     (when (and (= :create event)
+     (when (and create?
                 (not (backup-credential-scoped? opts))
                 (not (credential-sharing-accepted? opts)))
        [(str "backups would use the same R2 credential as OpenTofu state and live "
@@ -350,7 +404,7 @@
              " scoped to the backup bucket alone, or set "
              ":r2-credential-sharing: shared-accepted in colors.yml to record "
              "that the blast radius is accepted")])
-     (when (and (= :create event)
+     (when (and create?
                 (not (:split? (effective-r2 opts)))
                 (not (credential-sharing-accepted? opts)))
        [(str "live Neon data would use the same R2 credential as OpenTofu state. "

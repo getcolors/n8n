@@ -17,8 +17,10 @@ set -euo pipefail
 # the same pin. Keep that pin equal in green/deps.edn, red/package.json and
 # blue/pyproject.toml; a diff here is the first thing that shows when it drifts.
 #
-# Two fixtures, because the SSH Keypair Standard has two modes and parity means
-# both keygen and opt-out hold in every colour.
+# Three fixtures. The SSH Keypair Standard has two modes and parity means
+# both keygen and opt-out hold in every colour; the AWS fixture adds the
+# second compute provider, a managed S3 state bucket, and the n8n-storage
+# stage.
 #
 # Renders resolve each colour's package from this working tree (the *_LIB_ROOT
 # overrides), while green, once, neon, red, and blue stay on their pins — a
@@ -42,6 +44,7 @@ build_variant() {
 
 build_variant colors
 build_variant optout
+build_variant aws
 
 diff -r "$root/green/src/resources/io/github/getcolors/n8n" "$root/red/resources"
 diff -r "$root/green/src/resources/io/github/getcolors/n8n" "$root/blue/src/package_n8n_blue/resources"

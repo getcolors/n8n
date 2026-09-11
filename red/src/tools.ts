@@ -7,13 +7,14 @@ import * as compute from "./compute.ts";
 import { createHash } from "node:crypto";
 import * as ansible from "red/ansible";
 import { stageDir } from "red/cli";
-import { PRESERVE_JINJA_DELIMITERS, contentSpec, type Spec, type Template } from "red/scaffold";
+import { PRESERVE_JINJA_DELIMITERS, contentSpec, scaffold, type Spec, type Template } from "red/scaffold";
 import * as tofu from "red/tofu";
 import { runtime } from "red/runtime";
 import type { Opts } from "red/workflow";
 import { failed } from "red/workflow";
 import { neonResource } from "./neon.ts";
 import * as sshConfig from "./ssh-config.ts";
+import * as storage from "./storage.ts";
 import * as validate from "./validate.ts";
 
 import ansibleSiteYml from "../resources/tools/ansible/site.yml" with { type: "text" };
@@ -81,6 +82,13 @@ export function credentialEnv(opts: Opts, ...slots: string[]): Record<string, st
 }
 
 export const backendCredentialEnv = (opts: Opts) => credentialEnv(opts);
+
+// The subprocess environment for the compute library and the managed backend:
+// the process environment plus any AWS credentials supplied as COLORS_PAR_AWS_*
+// overlays.
+export function environment(opts: Opts): Record<string, string | undefined> {
+  return { ...process.env, ...storage.awsEnv(opts) };
+}
 
 export function fallbackParams(opts: Opts): Record<string, unknown> {
   return { ip: "192.0.2.10", user: "root", sudoer: "root", name: validate.computeName(opts) };
@@ -181,10 +189,12 @@ export interface HttpSources {
 export async function httpSources(opts: Opts): Promise<HttpSources> {
   const selected=source_cidrs(opts,"http-sources","n8n-http-sources");
   if (!(selected.length===1&&selected[0]==="cloudflare")) return {source:"explicit",ranges:selected};
+  // AWS security groups here take IPv4 sources only, so the symbolic set drops
+  // its IPv6 members there; the checksum records what was applied.
   const live = await fetchCloudflareRanges();
   return live
-    ? { source: "fetched", ranges: live }
-    : { source: "fallback", ranges: cloudflareRangesFallback };
+    ? { source: "fetched", ranges: compute.ipv4Only(opts, live) }
+    : { source: "fallback", ranges: compute.ipv4Only(opts, cloudflareRangesFallback) };
 }
 
 export function rangesChecksum(values: string[]): string {
@@ -193,11 +203,11 @@ export function rangesChecksum(values: string[]): string {
 }
 
 export async function infrastructureStep(opts:Opts):Promise<Opts>{
- if(opts['red/event']==='delete')return compute.infrastructureStep(opts);
+ if(opts['red/event']==='delete')return compute.infrastructureStep(opts,environment(opts));
  const resolved=await httpSources(opts);
  if(opts['red/event']==='create'&&!opts['red/dry-run']&&resolved.source==='fallback')return {...opts,'red/exit':1,'red/err':'Cloudflare origin ranges unavailable'};
  const dir=toolDir(opts,infrastructureTool);mkdirSync(dir,{recursive:true});writeFileSync(dir+'/http-sources.json',pretty({origin:resolved.source,checksum:rangesChecksum(resolved.ranges),ranges:resolved.ranges}));
- return compute.infrastructureStep({...opts,'n8n-http-sources':resolved.ranges});
+ return compute.infrastructureStep({...opts,'n8n-http-sources':resolved.ranges},environment(opts));
 }
 
 // ---------------------------------------------------------- ansible (local)
@@ -280,11 +290,16 @@ export function inventory(opts: Opts): string {
 // quotes and hand Ansible `&#39;`. The secret therefore exists only in the
 // process that needs it: not in `.colors/`, not in a golden, not in this map.
 export function ansibleData(opts: Opts): Opts {
+  const { "n8n/storage-credentials": _credentials, ...rest } = opts;
   return {
-    ...opts,
+    ...rest,
     ip: opts.ip ?? "192.0.2.10",
     "ssh-keygen": (opts['colors-compute/key'] ? (opts['colors-compute/key'] as any).mode === 'managed' : validate.keygen(opts)),
     "neon-r2-prefix": opts["neon-r2-prefix"] ?? r2Prefix(opts),
+    // The backup bucket's endpoint and region default to Neon's, so desired
+    // state written for one bucket provider renders unchanged.
+    "n8n-backup-r2-endpoint": validate.backupEndpoint(opts),
+    "n8n-backup-r2-region": validate.backupRegion(opts),
   };
 }
 
@@ -386,7 +401,24 @@ export async function dnsStep(opts: Opts): Promise<Opts> {
     spec(template("dns/main.tf", dnsMainTf), `${dir}/main.tf`, data),
     rawSpec(`${dir}/record.tf.json`, dnsJson(data)),
   ];
-  return tofu.tofuWithSpec(opts, specs, { dir, env: credentialEnv(opts, "provider-dns") });
+  // The S3 backend reads the ambient AWS chain; COLORS_PAR_AWS_* overlays are
+  // added so an operator who set only those still reaches state.
+  const env = { ...credentialEnv(opts, "provider-dns"), ...storage.awsEnv(opts) };
+  return tofu.tofuWithSpec(opts, specs, { dir, env: Object.keys(env).length > 0 ? env : undefined });
+}
+
+// The converge with the minted bucket credentials in the subprocess
+// environment, and nowhere else. `red/ansible`'s step has no environment hook,
+// so the command is run directly; the arguments are the ones it would build.
+export async function managedAnsibleStep(opts: Opts, playbook: string): Promise<Opts> {
+  const rendered = scaffold(opts, ansibleSpecs(opts));
+  const args = ["ansible-playbook", "-i", "inventory.json"];
+  if (opts["ssh-private-key-path"]) args.push("--private-key", String(opts["ssh-private-key-path"]));
+  args.push(playbook);
+  const result = await runtime.exec(args, { cwd: toolDir(opts, ansibleTool), env: storage.credentialEnv(opts), timeoutMs: 7200000 });
+  return result.exit === 0
+    ? { ...rendered, "red/exit": 0, "ansible/recap": ansible.parseRecap(result.out) }
+    : { ...rendered, "red/exit": 1, "red/err": `Ansible convergence failed: ${result.out}${result.err}` };
 }
 
 export async function ansibleStep(opts: Opts): Promise<Opts> {
@@ -396,6 +428,7 @@ export async function ansibleStep(opts: Opts): Promise<Opts> {
     // would only fail against the placeholder address.
     return { ...opts, "red/exit": 0 };
   }
+  if (storage.managed(opts) && opts["red/event"] === "create") return managedAnsibleStep(opts, "site.yml");
   return ansible.ansibleWithSpec(opts, {
     dir,
     inventory: "inventory.json",

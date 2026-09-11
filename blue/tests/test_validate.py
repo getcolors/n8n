@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 
-from conftest import fixture, optout
+from conftest import aws, aws_fixture, fixture, optout
 
 from package_n8n_blue import validate as v
 
@@ -214,6 +214,59 @@ def test_the_encryption_key_must_be_long_enough():
     assert [e for e in v.secret_errors(
         fixture({**creds, "n8n-encryption-key": "a" * 32}), "create")
         if re.search("N8N_ENCRYPTION_KEY", e)] == []
+
+
+# --- the second compute provider -------------------------------------------
+
+
+def test_backend_keys_follow_the_selected_backend():
+    # r2 names a bucket and an endpoint; s3 a bucket and a region. The old
+    # validator required r2-bucket unconditionally, so an S3 desired state
+    # could never validate.
+    assert v.state_errors(aws()) == []
+    assert v.state_errors(aws_fixture()) == []
+    assert has({"r2-bucket": None}, ":r2-bucket is required")
+    assert ":s3-bucket is required" in v.state_errors({k: val for k, val in aws().items() if k != "s3-bucket"})
+    assert ":s3-region is required" in v.state_errors({k: val for k, val in aws().items() if k != "s3-region"})
+    assert not any(re.search(":r2-", e) for e in v.state_errors(aws()))
+    assert not any(re.search(":s3-", e) for e in errs())
+
+
+def test_the_state_bucket_rule_follows_the_selected_backend():
+    assert ":neon-r2-bucket must not be the OpenTofu state bucket" in \
+        v.state_errors(aws({"neon-r2-bucket": aws()["s3-bucket"]}))
+    assert ":n8n-backup-r2-bucket must not be the state or live-data bucket" in \
+        v.state_errors(aws({"n8n-backup-r2-bucket": aws()["s3-bucket"]}))
+
+
+def test_the_managed_state_bucket_mode_is_validated():
+    assert has({"s3-bucket-mode": "adopt"}, "must be external or managed")
+    assert has({"s3-bucket-mode": "managed"}, "requires :provider-backend s3")
+    assert v.state_errors(aws({"s3-bucket-mode": "external"})) == []
+
+
+def test_the_backup_endpoint_and_region_default_to_neons():
+    # Existing R2 desired state carries neither key and keeps rendering the
+    # same remote.
+    assert v.backup_endpoint(fixture()) == fixture()["neon-r2-endpoint"]
+    assert v.backup_region(fixture()) == "auto"
+    assert v.backup_endpoint(fixture({"n8n-backup-r2-endpoint": "https://backup.example"})) \
+        == "https://backup.example"
+    assert v.backup_region(fixture({"n8n-backup-r2-region": "eu-west-1"})) == "eu-west-1"
+    assert v.backup_endpoint(fixture({"n8n-backup-r2-endpoint": ""})) == fixture()["neon-r2-endpoint"]
+    assert has({"n8n-backup-r2-endpoint": "ftp://nope"}, ":n8n-backup-r2-endpoint must be an https URL")
+
+
+def test_the_cloudflare_rule_holds_on_both_providers():
+    assert any(re.search("ACME HTTP-01", e)
+               for e in v.state_errors(aws({"cloudflare-proxied": False})))
+    assert v.state_errors(aws({"n8n-http-sources": ["1.2.3.0/24"], "cloudflare-proxied": False})) == []
+
+
+def test_every_problem_is_reported_once():
+    # The backend keys and the required list are two sources of one message.
+    reported = v.state_errors(fixture({"neon-r2-bucket": None}))
+    assert len(reported) == len(set(reported))
 
 
 def test_profile_may_not_be_overlaid_from_the_environment():

@@ -9,6 +9,7 @@
             [green.tofu :as tofu]
             [green.workflow :as wf]
             [io.github.getcolors.n8n.ssh-config :as ssh-config]
+            [io.github.getcolors.n8n.storage :as storage]
             [io.github.getcolors.n8n.validate :as validate]))
 
 (def infrastructure-tool "n8n-infrastructure")
@@ -41,6 +42,13 @@
                     (when-let [v (not-empty (str (get opts k)))] [env-var v])))
          (apply merge (map #(validate/tofu-env opts %) (conj (vec slots) :provider-backend))))))
 (defn backend-credential-env [opts] (credential-env opts))
+
+(defn environment
+  "The subprocess environment for the compute library and the managed
+  backend: the process environment plus any AWS credentials supplied as
+  COLORS_PAR_AWS_* overlays."
+  [opts]
+  (merge (into {} (System/getenv)) (storage/aws-env opts)))
 
 (defn fallback-params [opts]
   {:ip "192.0.2.10" :user "root" :sudoer "root" :name (validate/compute-name opts)})
@@ -92,9 +100,11 @@
   (let [v (compute/source-cidrs opts "http-sources" "n8n-http-sources")]
     (if-not (= ["cloudflare"] v)
       {:source :explicit :ranges v}
+      ;; AWS security groups here take IPv4 sources only, so the symbolic set
+      ;; drops its IPv6 members there; the checksum records what was applied.
       (if-let [live (fetch-cloudflare-ranges)]
-        {:source :fetched :ranges live}
-        {:source :fallback :ranges cloudflare-ranges-fallback}))))
+        {:source :fetched :ranges (compute/ipv4-only opts live)}
+        {:source :fallback :ranges (compute/ipv4-only opts cloudflare-ranges-fallback)}))))
 
 (defn ranges-checksum [xs]
   (let [d (java.security.MessageDigest/getInstance "SHA-256")]
@@ -102,14 +112,14 @@
          (map #(format "%02x" %)) str/join (take 16) str/join)))
 
 (defn infrastructure-step [opts]
- (if (= :delete (:green/event opts)) (compute/infrastructure-step opts)
+ (if (= :delete (:green/event opts)) (compute/infrastructure-step opts (environment opts))
   (let [{:keys [source ranges]} (http-sources opts)]
    (if (and (= :create (:green/event opts)) (not (:green/dry-run opts)) (= :fallback source))
     (assoc opts :green/exit 1 :green/err "Cloudflare origin ranges unavailable")
     (let [target (io/file (tool-dir opts infrastructure-tool) "http-sources.json")]
      (io/make-parents target)
      (spit target (json/generate-string {:origin (name source) :checksum (ranges-checksum ranges) :ranges ranges} {:pretty true}))
-     (compute/infrastructure-step (assoc opts :n8n-http-sources ranges)))))))
+     (compute/infrastructure-step (assoc opts :n8n-http-sources ranges) (environment opts)))))))
 
 ;; ---------------------------------------------------------- ansible (local)
 
@@ -178,10 +188,14 @@
   hand Ansible `&#39;`. The secret therefore exists only in the process that
   needs it: not in `.colors/`, not in a golden, not in this map."
   [opts]
-  (assoc opts
+  (assoc (dissoc opts :n8n/storage-credentials)
          :ip (or (:ip opts) "192.0.2.10")
          :ssh-keygen (if (:colors-compute/key opts) (= "managed" (get-in opts [:colors-compute/key :mode])) (validate/keygen? opts))
-         :neon-r2-prefix (or (:neon-r2-prefix opts) (r2-prefix opts))))
+         :neon-r2-prefix (or (:neon-r2-prefix opts) (r2-prefix opts))
+         ;; The backup bucket's endpoint and region default to Neon's, so
+         ;; desired state written for one bucket provider renders unchanged.
+         :n8n-backup-r2-endpoint (validate/backup-endpoint opts)
+         :n8n-backup-r2-region (validate/backup-region opts)))
 
 (defn neon-specs
   "The storage tier, rendered UNCHANGED from the pinned dependency into its own
@@ -263,14 +277,38 @@
         data (dns-data opts)
         specs [(spec (template "dns" "main.tf") (str dir "/main.tf") data)
                (raw-spec (str dir "/record.tf.json") (dns-json data))]]
-    (tofu/tofu-with-spec opts specs {:dir dir :env (credential-env opts :provider-dns)})))
+    ;; The S3 backend reads the ambient AWS chain; COLORS_PAR_AWS_* overlays
+    ;; are added so an operator who set only those still reaches state.
+    (tofu/tofu-with-spec opts specs {:dir dir :env (not-empty (merge (credential-env opts :provider-dns) (storage/aws-env opts)))})))
+
+(defn managed-ansible-step
+  "The converge with the minted bucket credentials in the subprocess
+  environment, and nowhere else. `green.ansible/ansible-step` has no
+  environment hook, so the command is run directly; the arguments are the
+  ones it would build."
+  [opts playbook]
+  (let [dir (tool-dir opts ansible-tool)
+        rendered (sc/scaffold opts (ansible-specs opts))
+        args (cond-> ["ansible-playbook" "-i" "inventory.json"]
+               (:ssh-private-key-path opts) (into ["--private-key" (str (:ssh-private-key-path opts))])
+               true (conj playbook))
+        result (process/run-with-timeout args {:dir dir :extra-env (storage/credential-env opts)} 7200000)]
+    (if (zero? (:exit result))
+      (assoc rendered :green/exit 0 :ansible/recap (ansible/parse-recap (:out result)))
+      (assoc rendered :green/exit 1 :green/err (str "Ansible convergence failed: " (:out result) (:err result))))))
 
 (defn ansible-step [opts]
   (let [dir (tool-dir opts ansible-tool)]
-    (if (and (= :delete (:green/event opts)) (or (:n8n/already-destroyed opts) (not (:ip opts))))
+    (cond
+      (and (= :delete (:green/event opts)) (or (:n8n/already-destroyed opts) (not (:ip opts))))
       ;; No compute in state: there is no host to stop, and the cleanup play
       ;; would only fail against the placeholder address.
       (assoc opts :green/exit 0)
+
+      (and (storage/managed? opts) (= :create (:green/event opts)))
+      (managed-ansible-step opts "site.yml")
+
+      :else
       (ansible/ansible-with-spec opts
         {:dir dir :inventory "inventory.json"
          :playbooks {:create "site.yml" :delete "cleanup.yml"}

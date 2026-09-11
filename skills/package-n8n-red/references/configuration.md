@@ -13,9 +13,9 @@ blanks.
 |---|---|
 | `profile` | `n8n` |
 | `workdir` | `.colors` |
-| `provider-compute` | `vultr` |
+| `provider-compute` | `vultr` or `aws` |
 | `provider-dns` | `cloudflare` |
-| `provider-backend` | `r2` |
+| `provider-backend` | `r2` or `s3` |
 | `compute-prevent-destroy` | `true` |
 
 ## n8n application
@@ -60,9 +60,16 @@ blanks.
 | Key | Example |
 |---|---|
 | `n8n-backup-r2-bucket` | `n8n-backup-example` |
+| `n8n-backup-r2-endpoint` | optional; defaults to `neon-r2-endpoint` |
+| `n8n-backup-r2-region` | optional; defaults to `neon-r2-region` |
 | `n8n-backup-oncalendar` | `"*-*-* 00/6:00:00"` |
 | `n8n-backup-retention-days` | `7` |
 | `n8n-backup-dir` | `/var/backups/n8n` |
+
+The backup bucket has its own rclone remote on the host, read with the pair
+installed at `/etc/colors/backup-r2.env`. Absent the two optional keys it
+shares the Neon bucket's endpoint and region, which is what every existing R2
+deployment renders.
 
 ## Soak thresholds
 
@@ -91,7 +98,7 @@ blanks.
 | `cloudflare-record-name` | `n8n` |
 | `cloudflare-proxied` | `true` |
 
-## Compute
+## Compute on Vultr
 
 | Key | Example |
 |---|---|
@@ -101,12 +108,72 @@ blanks.
 | `vultr-ssh-sources` | `(list)` |
 | `vultr-http-sources` | `cloudflare` |
 
+`n8n-ssh-sources` and `n8n-http-sources` are the provider-neutral spellings
+and take precedence over the `vultr-*` ones on either provider.
+
+## Compute on AWS
+
+| Key | Example |
+|---|---|
+| `provider-compute` | `aws` |
+| `aws-region` / `aws-availability-zone` | `us-east-1` / `us-east-1a` |
+| `aws-image-id` | an available Ubuntu 24.04 amd64 AMI, e.g. `ami-025d99823a4caad37` |
+| `aws-instance-type` | `t3.xlarge` |
+| `aws-root-volume-size-gb` | `60` |
+| `aws-vpc-cidr` / `aws-subnet-cidr` | `10.76.0.0/16` / `10.76.1.0/24` |
+| `n8n-ssh-sources` | explicit IPv4 CIDRs |
+| `n8n-http-sources` | `cloudflare` |
+
+One EC2 instance in its own VPC and public subnet, logged into as `ubuntu`.
+The AWS adapter takes IPv4 sources only: the symbolic `cloudflare` value
+resolves to Cloudflare's IPv4 ranges there, and an explicit IPv6 CIDR is a
+validation error. `aws-ssh-authorized-keys` selects SSH keypair opt-out mode
+the way `vultr-ssh-keys` does.
+
 ## OpenTofu state
 
 | Key | Example |
 |---|---|
-| `r2-bucket` | `tofu-state-example` |
-| `r2-endpoint` | `https://319271fed8bc6d2d9059362be1165f37.eu.r2.cloudflarestorage.com` |
+| `provider-backend` | `r2` or `s3` |
+| `r2-bucket` | `tofu-state-example` (with `r2`) |
+| `r2-endpoint` | `https://319271fed8bc6d2d9059362be1165f37.eu.r2.cloudflarestorage.com` (with `r2`) |
+| `s3-bucket` / `s3-region` | a deployment-unique bucket / `us-east-1` (with `s3`) |
+| `s3-bucket-mode` | `external` (default) or `managed` |
+
+`s3-bucket-mode: managed` makes the state bucket the deployment's own: the
+compute library creates it before the first remote state read, keeps every
+stage's state under `<profile>/`, and removes it after an authorized delete
+has destroyed everything else. It requires `provider-backend: s3`.
+
+## Managed S3 storage
+
+| Key | Example |
+|---|---|
+| `n8n-storage-managed` | `true` (default `false`) |
+
+With `n8n-storage-managed: true` an `n8n-storage` OpenTofu stage creates the
+Neon bucket (`neon-r2-bucket`) and the backup bucket
+(`n8n-backup-r2-bucket`), each with a public-access block, AES256
+encryption, and one IAM user whose policy reaches that bucket alone. The two
+access keys are read from the stage's sensitive output and handed to the
+converge as `COLORS_PAR_NEON_R2_*` and `COLORS_PAR_N8N_BACKUP_R2_*` in the
+Ansible subprocess environment. They are never rendered and the operator
+never holds them.
+
+Managed storage requires `provider-compute: aws`, `provider-backend: s3`, an
+AWS region in `neon-r2-region`, the same region for the backup bucket, and
+S3-valid bucket names. Set both endpoints to the regional S3 endpoint, for
+example `https://s3.us-east-1.amazonaws.com`. The `r2` in the key names is
+historical; the neon vocabulary is kept so the upstream templates render
+unchanged. The stage refuses to adopt a bucket that already exists: only a
+bucket that answers 404 to a head-bucket probe, or one this stage already
+tracks under the same name, passes.
+
+Bucket lifecycle: the buckets are created with `force_destroy = true` and
+`prevent_destroy` tied to `compute-prevent-destroy`. An authorized delete
+removes their contents, the buckets, and the IAM users before the compute
+destroy, and finalizes the managed state bucket last. That is unlike R2
+desired state, where delete leaves every bucket untouched.
 
 ## Reverse proxy
 
@@ -116,8 +183,9 @@ blanks.
 
 ## Keys that are deliberately absent
 
-- **`vultr-ssh-keys`** — supplying it selects SSH-keypair *opt-out* mode. Absent,
-  the package generates and owns the profile-named keypair.
+- **`vultr-ssh-keys`** or **`aws-ssh-authorized-keys`**. Supplying it selects
+  SSH-keypair *opt-out* mode. Absent, the package generates and owns the
+  profile-named keypair.
 - **`vultr-name`** — the Compute Name Standard's optional override. Absent, the
   machine and its firewall are named after the profile.
 - **`webhook-url`** — the deprecated spelling. n8n 2.35.0 replaced it with
@@ -139,10 +207,11 @@ messages:
   unbounded
 - any of the three security keys set to `false` (all three default to `false`
   upstream, contradicting the 2.0 breaking-changes page)
-- `vultr-http-sources: cloudflare` together with `cloudflare-proxied: false` —
-  unproxied, the ACME HTTP-01 challenge arrives from Let's Encrypt's own
-  addresses and is dropped by the firewall; the converge still succeeds and the
-  first HTTPS request finds no certificate
+- `n8n-http-sources: cloudflare` (or `vultr-http-sources`) together with
+  `cloudflare-proxied: false`, on either provider. Unproxied, the ACME HTTP-01
+  challenge arrives from Let's Encrypt's own addresses and is dropped by the
+  firewall; the converge still succeeds and the first HTTPS request finds no
+  certificate
 - `n8n-proxy-hops` below 2 when proxied — Cloudflare, then Caddy
 - a `neon-r2-bucket` equal to the state bucket, or a backup bucket equal to
   either — blast radius
@@ -152,4 +221,11 @@ messages:
   `r2-credential-sharing: shared-accepted` records the choice. Bucket
   separation was already enforced; enforcing it on one axis while silently
   permitting the other is worse than enforcing neither, because the visible
-  rule implies the invisible one is handled too
+  rule implies the invisible one is handled too. With
+  `n8n-storage-managed: true` the rule does not apply: the pairs are minted
+  one per bucket and `r2-credential-sharing` is not required
+- `s3-bucket-mode: managed` without `provider-backend: s3`, and
+  `n8n-storage-managed: true` without `provider-compute: aws` and
+  `provider-backend: s3`
+- a `provider-backend` whose own keys are missing: `r2-bucket` and
+  `r2-endpoint` for `r2`, `s3-bucket` and `s3-region` for `s3`

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import random
 import shlex
 import re
@@ -13,12 +14,12 @@ from pathlib import Path
 import package_neon_blue
 from colors_compute import source_cidrs
 from blue import tofu
-from blue.ansible import ansible_with_spec
+from blue.ansible import ansible_with_spec, parse_recap
 from blue.cli import stage_dir
 from blue.runtime import runtime
-from blue.scaffold import PRESERVE_JINJA_DELIMITERS, content_spec
+from blue.scaffold import PRESERVE_JINJA_DELIMITERS, content_spec, scaffold
 
-from . import compute, ssh_config, validate
+from . import compute, ssh_config, storage, validate
 
 infrastructure_tool = "n8n-infrastructure"
 dns_tool = "n8n-dns"
@@ -78,6 +79,13 @@ def credential_env(opts: dict, *slots: str) -> dict[str, str] | None:
 
 def backend_credential_env(opts: dict) -> dict[str, str] | None:
     return credential_env(opts)
+
+
+def environment(opts: dict) -> dict[str, str]:
+    """The subprocess environment for the compute library and the managed
+    backend: the process environment plus any AWS credentials supplied as
+    COLORS_PAR_AWS_* overlays."""
+    return {**os.environ, **storage.aws_env(opts)}
 
 
 def fallback_params(opts: dict) -> dict:
@@ -172,10 +180,12 @@ def http_sources(opts: dict) -> dict:
     selected = source_cidrs(opts, "http-sources", "n8n-http-sources")
     if selected != ["cloudflare"]:
         return {"source":"explicit", "ranges":selected}
+    # AWS security groups here take IPv4 sources only, so the symbolic set
+    # drops its IPv6 members there; the checksum records what was applied.
     live = fetch_cloudflare_ranges()
     if live:
-        return {"source": "fetched", "ranges": live}
-    return {"source": "fallback", "ranges": cloudflare_ranges_fallback}
+        return {"source": "fetched", "ranges": compute.ipv4_only(opts, live)}
+    return {"source": "fallback", "ranges": compute.ipv4_only(opts, cloudflare_ranges_fallback)}
 
 
 def ranges_checksum(values: list[str]) -> str:
@@ -184,13 +194,13 @@ def ranges_checksum(values: list[str]) -> str:
 
 
 async def infrastructure_step(opts):
-    if opts.get('blue/event') == 'delete': return await compute.compute_step(opts)
+    if opts.get('blue/event') == 'delete': return await compute.compute_step(opts, environment(opts))
     resolved = http_sources(opts)
     if opts.get('blue/event') == 'create' and not opts.get('blue/dry-run') and resolved['source'] == 'fallback':
         return {**opts, 'blue/exit':1, 'blue/err':'Cloudflare origin ranges unavailable'}
     directory = Path(tool_dir(opts, infrastructure_tool)); directory.mkdir(parents=True, exist_ok=True)
     (directory/'http-sources.json').write_text(_pretty({'origin':resolved['source'],'checksum':ranges_checksum(resolved['ranges']),'ranges':resolved['ranges']}))
-    return await compute.compute_step({**opts, 'n8n-http-sources':resolved['ranges']})
+    return await compute.compute_step({**opts, 'n8n-http-sources':resolved['ranges']}, environment(opts))
 
 
 # ---------------------------------------------------------- ansible (local)
@@ -262,10 +272,14 @@ def ansible_data(opts: dict) -> dict:
     HTML-escape the quotes and hand Ansible `&#39;`. The secret therefore
     exists only in the process that needs it: not in `.colors/`, not in a
     golden, not in this map."""
-    return {**opts,
+    return {**{k: v for k, v in opts.items() if k != "n8n/storage-credentials"},
             "ip": opts.get("ip") or "192.0.2.10",
             "ssh-keygen": (opts['colors-compute/key']['mode'] == 'managed' if 'colors-compute/key' in opts else validate.keygen(opts)),
-            "neon-r2-prefix": opts.get("neon-r2-prefix") or r2_prefix(opts)}
+            "neon-r2-prefix": opts.get("neon-r2-prefix") or r2_prefix(opts),
+            # The backup bucket's endpoint and region default to Neon's, so
+            # desired state written for one bucket provider renders unchanged.
+            "n8n-backup-r2-endpoint": validate.backup_endpoint(opts),
+            "n8n-backup-r2-region": validate.backup_region(opts)}
 
 
 NEON_FILES = [
@@ -320,12 +334,32 @@ def ansible_specs(opts: dict) -> list[dict]:
             raw_spec(f"{dir}/inventory.json", inventory(data))]
 
 
+async def managed_ansible_step(opts: dict, playbook: str) -> dict:
+    """The converge with the minted bucket credentials in the subprocess
+    environment, and nowhere else. `blue.ansible.ansible_step` has no
+    environment hook, so the command is run directly; the arguments are the
+    ones it would build."""
+    dir = tool_dir(opts, ansible_tool)
+    rendered = scaffold(opts, ansible_specs(opts))
+    args = ["ansible-playbook", "-i", "inventory.json"]
+    if opts.get("ssh-private-key-path"):
+        args += ["--private-key", str(opts["ssh-private-key-path"])]
+    args.append(playbook)
+    result = await runtime.exec(args, cwd=dir, env=storage.credential_env(opts), timeout_ms=7200000)
+    if result.exit:
+        return {**rendered, "blue/exit": 1,
+                "blue/err": f"Ansible convergence failed: {result.out}{result.err}"}
+    return {**rendered, "blue/exit": 0, "ansible/recap": parse_recap(result.out)}
+
+
 async def ansible_step(opts: dict) -> dict:
     dir = tool_dir(opts, ansible_tool)
     if opts.get("blue/event") == "delete" and (opts.get("n8n/already-destroyed") or not opts.get("ip")):
         # No compute in state: there is no host to stop, and the cleanup play
         # would only fail against the placeholder address.
         return {**opts, "blue/exit": 0}
+    if storage.managed(opts) and opts.get("blue/event") == "create":
+        return await managed_ansible_step(opts, "site.yml")
     return await ansible_with_spec(
         opts, ansible_specs(opts),
         dir=dir, inventory="inventory.json",
@@ -368,8 +402,10 @@ async def dns_step(opts: dict) -> dict:
     data = dns_data(opts)
     specs = [spec(template("dns", "main.tf"), f"{dir}/main.tf", data),
              raw_spec(f"{dir}/record.tf.json", dns_json(data))]
-    return await tofu.tofu_with_spec(
-        opts, specs, dir=dir, env=credential_env(opts, "provider-dns"))
+    # The S3 backend reads the ambient AWS chain; COLORS_PAR_AWS_* overlays
+    # are added so an operator who set only those still reaches state.
+    env = {**(credential_env(opts, "provider-dns") or {}), **storage.aws_env(opts)}
+    return await tofu.tofu_with_spec(opts, specs, dir=dir, env=env or None)
 
 
 # ------------------------------------------------------------- acceptance

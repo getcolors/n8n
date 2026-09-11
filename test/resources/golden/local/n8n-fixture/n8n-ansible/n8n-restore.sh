@@ -21,7 +21,7 @@ WORK=$(mktemp -d /var/tmp/n8n-restore.XXXXXX)
 trap 'rm -rf "$WORK"' EXIT
 
 for f in n8n.dump n8n-data.tar.gz manifest.txt; do
-  rclone copyto "r2:$SRC/$f" "$WORK/$f"
+  rclone copyto "backup:$SRC/$f" "$WORK/$f"
 done
 
 # The manifest is what makes the pair provable after the fact; the graceful

@@ -15,7 +15,7 @@ SECS=300
 TAG="colors-soak-$(date -u +%s)"
 
 before_objects() {
-  rclone lsf --recursive "r2:$NEON_BUCKET/$NEON_PREFIX/" 2>/dev/null | grep -c . || echo 0
+  rclone lsf --recursive "store:$NEON_BUCKET/$NEON_PREFIX/" 2>/dev/null | grep -c . || echo 0
 }
 
 obj0=$(before_objects)

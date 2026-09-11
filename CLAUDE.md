@@ -6,14 +6,17 @@ file covers only what is specific to `n8n`.
 
 ## What this is
 
-A tri-colour Package Skill (green, red, blue): n8n on one Vultr instance,
-backed by a colocated self-hosted Neon storage tier, behind Caddy, with an
+A tri-colour Package Skill (green, red, blue): n8n on one Vultr instance or
+one AWS EC2 instance, backed by a colocated self-hosted Neon storage tier
+whose layers and WAL live in Cloudflare R2 or Amazon S3, behind Caddy, with an
 external task runner.
 
 Green is canonical. A behavioural change lands in all three colours in the same
 commit and passes `scripts/parity.sh`, which renders both fixtures through
 every colour and diffs the trees — and the colour template trees
-(`red/resources`, blue's embedded `resources/`) — byte for byte. Fixtures and
+(`red/resources`, blue's embedded `resources/`), byte for byte. There are
+three fixtures: Vultr keygen, Vultr opt-out, and AWS with a managed S3 state
+bucket and managed storage. Fixtures and
 goldens are shared at the repository root (`test/fixtures/`,
 `test/resources/golden/`) with symlinks from `green/test/`. Each colour
 directory holds a launcher symlink to its skill payload.
@@ -52,7 +55,9 @@ Consequences that are easy to get wrong:
   rendered bytes are the dependency's rather than this package's.
 - **The upstream play reads `COLORS_PAR_NEON_R2_*`** via `lookup('env')`. The
   deployment's `.envrc` maps whatever pair is configured onto exactly those
-  names.
+  names. With `n8n-storage-managed: true` the storage stage supplies them
+  instead, in the Ansible subprocess environment only (`storage/credential-env`
+  in green); they are never rendered.
 - **The upstream play owns the database credential.** It generates the role
   password at `/etc/neon/secrets/neon_role_password`; never mint a second one.
 
@@ -83,6 +88,18 @@ the task rather than the character.
 calls.** `./scripts/syntax.sh` runs `ansible-playbook --syntax-check` on the
 rendered tree offline; run it before any converge.
 
+## Backups have their own remote
+
+`n8n-env.sh` defines two rclone remotes: `store` for the Neon bucket, read
+with the pair neon's play installs at `/etc/neon/r2.env`, and `backup` for
+the backup bucket, read with the pair this package's play installs at
+`/etc/colors/backup-r2.env` from `COLORS_PAR_N8N_BACKUP_R2_*`. The provider
+flips from `Cloudflare` to `AWS` on an `amazonaws.com` endpoint. An empty
+backup pair is a refusal unless desired state records
+`r2-credential-sharing: shared-accepted`, in which case the backup remote
+falls back to the Neon pair and the smoke gate prints `RISK`. With its own
+pair the gate lists the Neon bucket with it and fails on success.
+
 ## The origin ingress list is fetched, not stored
 
 `vultr-http-sources: cloudflare` is a symbolic source the package *resolves* at
@@ -100,11 +117,11 @@ fallback lists identical across the three colours; parity diffs the rendered
 ## Testing
 
 ```sh
-cd green && bb test        # validator and rendering rules
+cd green && bb test        # validator, storage, workflow, and rendering rules
 cd red && bun test && bun run typecheck
 cd blue && uv run pytest
-./scripts/golden.sh        # green, two fixtures: keygen and ssh-keypair opt-out
-./scripts/parity.sh        # three colours, two fixtures, byte for byte
+./scripts/golden.sh        # green, three fixtures: keygen, ssh-keypair opt-out, aws
+./scripts/parity.sh        # three colours, three fixtures, byte for byte
 ./scripts/launcher.sh      # the three payloads, and green end to end from a copy
 ./scripts/syntax.sh        # offline playbook syntax
 ```
@@ -126,10 +143,10 @@ otherwise.
 
 ## Compute and SSH ownership
 
-The package depends on `colors-compute` at `3451a05e719b0ad6809f3c88b241a8c010b8f58b` and Neon application templates at `e19a213067d307b55d1b37a2e83cdc1a150b7d91`. Compute uses the same singleton library workflow as cluster fan-out. R2/S3 state uses `<profile>/compute/shared.tfstate`, `<profile>/compute/nodes/0.tfstate`, and the deployment journal. Existing `<profile>/n8n-infrastructure.tfstate` requires explicit migration and is refused automatically. DNS stays in its separate existing state.
+The package depends on `colors-compute` at `09ec539e75dc21c4dafb019eb8f9da276e695f6f` (recorded in `green/deps.edn`; `red/package.json`, the root `package.json`, and `blue/pyproject.toml` each record their own copy and must carry the same SHA) and Neon application templates at `e19a213067d307b55d1b37a2e83cdc1a150b7d91`. Compute uses the same singleton library workflow as cluster fan-out, on Vultr or AWS. R2/S3 state uses `<profile>/compute/shared.tfstate`, `<profile>/compute/nodes/0.tfstate`, and the deployment journal. Existing `<profile>/n8n-infrastructure.tfstate` requires explicit migration and is refused automatically. DNS stays in its separate existing state, and managed storage in `<profile>/n8n-storage.tfstate`.
 
-Create runs compute, DNS, profile SSH alias, application convergence, then acceptance. Delete first inspects owned compute, stops the application, removes the alias, removes DNS, then destroys compute. The library manages generated keys and registration cleanup. External private paths are explicit Ansible and acceptance SSH inputs. Managed aliases add `IdentityFile ~/.ssh/<profile>`; external aliases do not.
+Create runs compute, the storage stage when `n8n-storage-managed` is true, DNS, profile SSH alias, application convergence, then acceptance. Delete first inspects owned compute, stops the application, removes the alias, removes DNS, removes the managed buckets, destroys compute, and with `s3-bucket-mode: managed` finalizes the state bucket last; a delete that finds no live compute under a managed state bucket runs only that finalization. The library manages generated keys and registration cleanup. External private paths are explicit Ansible and acceptance SSH inputs. Managed aliases add `IdentityFile ~/.ssh/<profile>`; external aliases do not.
 
-The neutral `n8n-ssh-sources` and `n8n-http-sources` options take precedence over library-resolved legacy provider options. The symbolic HTTP value `cloudflare` retains the fetched ranges and checksum report. A real create refuses a failed fetch; build can use the reviewed fallback. No cloud resources were created while validating this migration.
+The neutral `n8n-ssh-sources` and `n8n-http-sources` options take precedence over library-resolved legacy provider options. The symbolic HTTP value `cloudflare` retains the fetched ranges and checksum report; on AWS it resolves to the IPv4 ranges only, because the adapter takes IPv4 sources. A real create refuses a failed fetch; build can use the reviewed fallback. No cloud resources were created while validating this migration.
 
 Validated retired compute prevents remote Ansible during delete even when caller input retains a stale IP or private-key path. Remaining application and local cleanup keeps its existing ordering. Normal creation still converges the application.

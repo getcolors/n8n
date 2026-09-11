@@ -31,14 +31,14 @@ esac
 # `grep -c .` already prints 0 on no match, so a trailing `|| echo 0`
 # emits TWO zeros and the later [ ] test dies with
 #   [: 0\n0: integer expression expected
-ps_n=$(rclone lsf --recursive "r2:$NEON_BUCKET/$NEON_PREFIX/" 2>/dev/null | grep -c . | head -1)
+ps_n=$(rclone lsf --recursive "store:$NEON_BUCKET/$NEON_PREFIX/" 2>/dev/null | grep -c . | head -1)
 [ "${ps_n:-0}" -gt 0 ] && pass "A2a pageserver objects present ($ps_n)" \
                        || fail "A2a no objects under <{ neon-r2-prefix }>/"
 before=$(mktemp); after=$(mktemp)
-rclone lsf --recursive "r2:$NEON_BUCKET/$NEON_PREFIX/safekeeper/" 2>/dev/null | sort > "$before"
+rclone lsf --recursive "store:$NEON_BUCKET/$NEON_PREFIX/safekeeper/" 2>/dev/null | sort > "$before"
 psql_admin "select pg_switch_wal()" >/dev/null
 sleep 20
-rclone lsf --recursive "r2:$NEON_BUCKET/$NEON_PREFIX/safekeeper/" 2>/dev/null | sort > "$after"
+rclone lsf --recursive "store:$NEON_BUCKET/$NEON_PREFIX/safekeeper/" 2>/dev/null | sort > "$after"
 if [ -n "$(comm -13 "$before" "$after")" ]; then
   pass "A2b new safekeeper segment after pg_switch_wal()"
 else
@@ -160,23 +160,33 @@ else
 fi
 
 echo "== R: recovery =="
-# R2 is conditional by design. Making it mandatory would fail every converge
-# that runs on the shared credential -- which is the credential model actually
-# in use. Skipping it loudly is honest; passing it silently would not be.
-if [ -n "${COLORS_PAR_N8N_BACKUP_R2_ACCESS_KEY_ID:-}" ]; then
-  if rclone lsf "r2:$NEON_BUCKET/$NEON_PREFIX/" >/dev/null 2>&1; then
-    fail "R2 the backup credential can read the LIVE data bucket"
-  else
-    pass "R2 backup credential is scoped away from live data"
-  fi
-else
-  # Not "skip". A skip reads as "not applicable"; this is a security property
-  # the deployment has explicitly accepted the absence of, and it should say so
-  # every single run.
-  printf '  RISK  %s\n' "R2 credential separation NOT in place -- accepted in desired state.
-        One credential reaches OpenTofu state, live Neon data and backups.
-        Close it: two bucket-scoped R2 tokens, then remove r2-credential-sharing."
-fi
+# R2 runs for real whenever the backup pair is its own credential: a probe
+# remote carries the BACKUP pair against the STORE bucket, and a listing that
+# succeeds means the credential is not scoped. The shared case is reported as
+# a risk rather than skipped: "skip" reads as "not applicable", and this is a
+# security property the deployment has explicitly accepted the absence of.
+case "$BACKUP_CREDENTIAL_MODE" in
+  split)
+    export RCLONE_CONFIG_PROBE_TYPE=s3 RCLONE_CONFIG_PROBE_PROVIDER="$RCLONE_CONFIG_STORE_PROVIDER"
+    export RCLONE_CONFIG_PROBE_ENDPOINT="$RCLONE_CONFIG_STORE_ENDPOINT" RCLONE_CONFIG_PROBE_REGION="$RCLONE_CONFIG_STORE_REGION"
+    export RCLONE_CONFIG_PROBE_NO_CHECK_BUCKET=true RCLONE_CONFIG_PROBE_NO_HEAD=true
+    export RCLONE_CONFIG_PROBE_ACCESS_KEY_ID="$RCLONE_CONFIG_BACKUP_ACCESS_KEY_ID"
+    export RCLONE_CONFIG_PROBE_SECRET_ACCESS_KEY="$RCLONE_CONFIG_BACKUP_SECRET_ACCESS_KEY"
+    if rclone lsf "probe:$NEON_BUCKET/$NEON_PREFIX/" >/dev/null 2>&1; then
+      fail "R2 the backup credential can read the LIVE data bucket"
+    else
+      pass "R2 backup credential is scoped away from live data"
+    fi
+    ;;
+  shared)
+    printf '  RISK  %s\n' "R2 credential separation NOT in place -- accepted in desired state.
+        One credential reaches live Neon data and backups.
+        Close it: a bucket-scoped backup token, then remove r2-credential-sharing."
+    ;;
+  *)
+    fail "R2 no backup credential is installed and sharing is not accepted"
+    ;;
+esac
 
 [ "$rc" -eq 0 ] && echo "acceptance: all gates passed" || echo "acceptance: FAILED" >&2
 exit "$rc"

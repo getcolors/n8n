@@ -23,6 +23,13 @@
 #                   MAKES EVERY SAVED CREDENTIAL UNDECRYPTABLE -- it is not
 #                   regenerable, back it up outside this machine.)
 #
+# On AWS (provider-compute: aws, provider-backend: s3) none of the Vultr or
+# R2 pairs apply: every AWS call reads the ambient credential chain, which the
+# deployment's .envrc feeds from COLORS_PAR_AWS_ACCESS_KEY_ID and
+# COLORS_PAR_AWS_SECRET_ACCESS_KEY. With n8n-storage-managed: true the Neon and
+# backup pairs are minted by the n8n-storage stage, one per bucket, and are
+# never operator-held. See test/fixtures/aws.yml for that shape.
+#
 # The Postgres role passwords, the n8n owner-account password, and the task
 # runner auth token are generated on the server during convergence (create-once
 # under /etc/n8n/secrets/) and are not operator-supplied; retrieve them over
@@ -148,9 +155,13 @@ neon-role: n8n
 # --- Neon data and backups in R2 ---------------------------------------------
 
 # Pageserver layers and safekeeper WAL, under this deployment's <profile>/
-# prefix, plus the six-hourly logical backup under <profile>/backup/.
+# prefix, plus the six-hourly logical backup in its own bucket.
 # Never configure R2 lifecycle rules on this bucket: they would delete live
 # layers and WAL that Neon still references.
+#
+# The same keys carry a regional S3 endpoint and region on AWS
+# (https://s3.us-east-1.amazonaws.com, us-east-1); the `r2` in the names is
+# historical.
 #
 # Dedicated buckets, unlike neon-vultr which put Neon data in the shared
 # OpenTofu state bucket. Verified live 2026-09-01: the configured credential can
@@ -174,6 +185,9 @@ neon-r2-prefix: n8n/data
 # nightly: a 24-hour RPO on a system holding live third-party credentials is not
 # defensible, and the dump is small.
 n8n-backup-r2-bucket: n8n-backup-example
+# The backup bucket is its own rclone remote on the host. Its endpoint and
+# region default to the Neon bucket's; set n8n-backup-r2-endpoint and
+# n8n-backup-r2-region only when the two buckets live somewhere different.
 n8n-backup-oncalendar: "*-*-* 00/6:00:00"
 n8n-backup-retention-days: 7
 n8n-backup-dir: /var/backups/n8n
@@ -237,6 +251,8 @@ vultr-http-sources: cloudflare
 
 # --- OpenTofu state backend ---------------------------------------------------
 
+# With provider-backend: s3 these become s3-bucket and s3-region, and
+# s3-bucket-mode: managed makes the state bucket the deployment's own.
 r2-bucket: tofu-state-example
 r2-endpoint: https://319271fed8bc6d2d9059362be1165f37.eu.r2.cloudflarestorage.com
 

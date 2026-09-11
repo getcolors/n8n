@@ -8,6 +8,7 @@ import * as workflow from "../src/workflow.ts";
 
 const fixtureFile = join(import.meta.dir, "../../test/fixtures/colors.yml");
 const optoutFile = join(import.meta.dir, "../../test/fixtures/optout.yml");
+const awsFile = join(import.meta.dir, "../../test/fixtures/aws.yml");
 
 function readFixture(path: string, overrides: Opts): Opts {
   const text = readFileSync(path, "utf8").replaceAll("WORKDIR", ".colors");
@@ -16,6 +17,14 @@ function readFixture(path: string, overrides: Opts): Opts {
 
 const fixture = (overrides: Opts = {}) => readFixture(fixtureFile, overrides);
 const optout = (overrides: Opts = {}) => readFixture(optoutFile, overrides);
+// The same deployment on AWS with an S3 state bucket: no vultr-* or r2-*
+// keys, native S3 endpoints in the neon-* vocabulary, IPv4 sources only. The
+// committed fixture also manages its storage; this base strips that flag so
+// the second provider is tested on its own, as green's `aws` map is.
+const aws = (overrides: Opts = {}): Opts => {
+  const { "n8n-storage-managed": _managed, ...rest } = readFixture(awsFile, {});
+  return { ...rest, ...overrides };
+};
 
 // A minimal valid desired state. Kept complete on purpose: `stateErrors`
 // reports every problem at once, so a fixture missing keys makes every test
@@ -220,6 +229,56 @@ describe("validate", () => {
       .filter((e) => /N8N_ENCRYPTION_KEY/.test(e))).toEqual([]);
   });
 
+  // --- the second compute provider --------------------------------------------
+
+  test("backend keys follow the selected backend", () => {
+    // r2 names a bucket and an endpoint; s3 a bucket and a region. The old
+    // validator required r2-bucket unconditionally, so an S3 desired state
+    // could never validate.
+    expect(validate.stateErrors(aws())).toEqual([]);
+    expect(has({ "r2-bucket": null }, ":r2-bucket is required")).toBe(true);
+    expect(validate.stateErrors(aws({ "s3-bucket": null }))).toContain(":s3-bucket is required");
+    expect(validate.stateErrors(aws({ "s3-region": null }))).toContain(":s3-region is required");
+    expect(validate.stateErrors(aws()).some((e) => /:r2-/.test(e))).toBe(false);
+    expect(errs().some((e) => /:s3-/.test(e))).toBe(false);
+  });
+
+  test("the state bucket rule follows the selected backend", () => {
+    expect(validate.stateErrors(aws({ "neon-r2-bucket": aws()["s3-bucket"] })))
+      .toContain(":neon-r2-bucket must not be the OpenTofu state bucket");
+    expect(validate.stateErrors(aws({ "n8n-backup-r2-bucket": aws()["s3-bucket"] })))
+      .toContain(":n8n-backup-r2-bucket must not be the state or live-data bucket");
+  });
+
+  test("the managed state bucket mode is validated", () => {
+    expect(has({ "s3-bucket-mode": "adopt" }, "must be external or managed")).toBe(true);
+    expect(has({ "s3-bucket-mode": "managed" }, "requires :provider-backend s3")).toBe(true);
+    expect(validate.stateErrors(aws({ "s3-bucket-mode": "external" }))).toEqual([]);
+  });
+
+  test("the backup endpoint and region default to neon's", () => {
+    // Existing R2 desired state carries neither key and keeps rendering the
+    // same remote.
+    expect(validate.backupEndpoint(base())).toBe(base()["neon-r2-endpoint"]);
+    expect(validate.backupRegion(base())).toBe("auto");
+    expect(validate.backupEndpoint(base({ "n8n-backup-r2-endpoint": "https://backup.example" }))).toBe("https://backup.example");
+    expect(validate.backupRegion(base({ "n8n-backup-r2-region": "eu-west-1" }))).toBe("eu-west-1");
+    expect(validate.backupEndpoint(base({ "n8n-backup-r2-endpoint": "" }))).toBe(base()["neon-r2-endpoint"]);
+    expect(has({ "n8n-backup-r2-endpoint": "ftp://nope" }, ":n8n-backup-r2-endpoint must be an https URL")).toBe(true);
+  });
+
+  test("the cloudflare rule holds on both providers", () => {
+    expect(validate.stateErrors(aws({ "cloudflare-proxied": false })).some((e) => /ACME HTTP-01/.test(e))).toBe(true);
+    expect(validate.stateErrors(aws({ "n8n-http-sources": ["1.2.3.0/24"], "cloudflare-proxied": false }))).toEqual([]);
+  });
+
+  test("errors are reported once each", () => {
+    // Two rules can name the same requirement; the list is distinct, so a
+    // reader counts problems rather than rule firings.
+    const errors = validate.stateErrors(aws({ "n8n-backup-r2-bucket": null }));
+    expect(new Set(errors).size).toBe(errors.length);
+  });
+
   test("profile may not be overlaid from the environment", () => {
     expect(validate.envErrors({ [validate.profilePar]: "somewhere-else" }).length).toBeGreaterThan(0);
     expect(validate.envErrors({})).toEqual([]);
@@ -300,6 +359,28 @@ describe("tools", () => {
     expect(tools.rangesChecksum(["a", "b"])).not.toBe(tools.rangesChecksum(["a", "c"]));
   });
 
+  test("aws symbolic cloudflare sources are IPv4 only and storage secrets never render", async () => {
+    // The AWS adapter takes IPv4 sources only, so the symbolic set drops its
+    // IPv6 members there; an explicit range is left alone.
+    const opts = aws({ "red/event": "build", "n8n/storage-credentials": { credentials: { neon: { access_key_id: "never-render" } } } });
+    const resolved = await tools.httpSources(opts);
+    expect(resolved.ranges.length).toBeGreaterThan(0);
+    expect(resolved.ranges.some((range) => range.includes(":"))).toBe(false);
+    expect((await tools.httpSources(aws({ "n8n-http-sources": ["2001:db8::/32"] }))).ranges).toEqual(["2001:db8::/32"]);
+    // On Vultr the symbolic set keeps its IPv6 members.
+    expect((await tools.httpSources(fixture())).ranges.some((range) => range.includes(":"))).toBe(true);
+    expect(tools.ansibleData(opts)["n8n/storage-credentials"]).toBeUndefined();
+  });
+
+  test("the ansible data defaults the backup endpoint and region to neon's", () => {
+    const data = tools.ansibleData(fixture());
+    expect(data["n8n-backup-r2-endpoint"]).toBe(fixture()["neon-r2-endpoint"]);
+    expect(data["n8n-backup-r2-region"]).toBe("auto");
+    const explicit = tools.ansibleData(fixture({ "n8n-backup-r2-endpoint": "https://backup.example", "n8n-backup-r2-region": "eu-west-1" }));
+    expect(explicit["n8n-backup-r2-endpoint"]).toBe("https://backup.example");
+    expect(explicit["n8n-backup-r2-region"]).toBe("eu-west-1");
+  });
+
   test("the dns record is proxied with an automatic ttl", () => {
     // Cloudflare rejects an explicit TTL on a proxied record, and the zone
     // data source is named `zone` with attribute `id` -- both were wrong on
@@ -336,5 +417,52 @@ describe("workflow", () => {
     expect(workflow.backendAdvice(tools.dnsTool)).toBeDefined();
     expect(tools.toolDir({ ...opts, workdir: ".colors" }, tools.dnsTool))
       .toContain("n8n-fixture/n8n-dns");
+  });
+
+  const successors = (step: string, runOpts: Opts) => workflow.wireFn(step, runOpts)?.slice(1) ?? [];
+
+  test("the unmanaged graph is unchanged", () => {
+    const create = { "red/event": "create" }, del = { "red/event": "delete" };
+    expect(successors("n8n/start", create)).toEqual(["n8n/infrastructure"]);
+    expect(successors("n8n/infrastructure", create)).toEqual(["n8n/dns"]);
+    expect(successors("n8n/dns", create)).toEqual(["n8n/ssh-config"]);
+    expect(successors("n8n/ssh-config", create)).toEqual(["n8n/ansible"]);
+    expect(successors("n8n/ansible", create)).toEqual(["n8n/acceptance"]);
+    expect(successors("n8n/start", del)).toEqual(["n8n/load"]);
+    expect(successors("n8n/load", del)).toEqual(["n8n/ansible"]);
+    expect(successors("n8n/dns", del)).toEqual(["n8n/infrastructure"]);
+    expect(successors("n8n/infrastructure", del)).toEqual([]);
+  });
+
+  test("managed storage sits between compute and dns", () => {
+    const create = { "red/event": "create", "n8n-storage-managed": true, "s3-bucket-mode": "managed" };
+    const del = { ...create, "red/event": "delete" };
+    // create: infrastructure, storage, dns
+    expect(successors("n8n/infrastructure", create)).toEqual(["n8n/storage"]);
+    expect(successors("n8n/storage", create)).toEqual(["n8n/dns"]);
+    // delete: dns, storage, infrastructure, then the state bucket last of all
+    expect(successors("n8n/dns", del)).toEqual(["n8n/storage"]);
+    expect(successors("n8n/storage", del)).toEqual(["n8n/infrastructure"]);
+    expect(successors("n8n/infrastructure", del)).toEqual(["n8n/backend-finalize"]);
+    expect(successors("n8n/backend-finalize", del)).toEqual([]);
+  });
+
+  test("a managed state bucket is finalized even without managed storage", () => {
+    const del = { "red/event": "delete", "s3-bucket-mode": "managed" };
+    expect(successors("n8n/dns", del)).toEqual(["n8n/infrastructure"]);
+    expect(successors("n8n/infrastructure", del)).toEqual(["n8n/backend-finalize"]);
+  });
+
+  test("a delete that finds no live compute goes straight to finalization", () => {
+    // The load step marks it; the router honours the mark only there.
+    expect(workflow.nextFn("n8n/load", ["n8n/ansible"], { "n8n/finalize-only": true }))
+      .toEqual([["n8n/backend-finalize", { "n8n/finalize-only": true }]]);
+    expect(workflow.nextFn("n8n/load", ["n8n/ansible"], {})).toEqual([["n8n/ansible", {}]]);
+    expect(workflow.nextFn("n8n/ansible", ["n8n/ssh-config"], { "red/exit": 1 })).toEqual([]);
+  });
+
+  test("every new stage is skipped by dry-run", () => {
+    expect(workflow.sideEffecting).toContain("n8n/storage");
+    expect(workflow.sideEffecting).toContain("n8n/backend-finalize");
   });
 });

@@ -1,0 +1,303 @@
+{
+  "output": {
+    "params": {
+      "value": {
+        "network_cidr": "${aws_vpc.network.cidr_block}",
+        "provider": "aws",
+        "security_group_id": "${aws_security_group.network.id}",
+        "subnet_id": "${aws_subnet.public.id}",
+        "vpc_id": "${aws_vpc.network.id}"
+      }
+    }
+  },
+  "provider": {
+    "aws": {
+      "region": "us-east-1"
+    }
+  },
+  "resource": {
+    "aws_internet_gateway": {
+      "gateway": {
+        "tags": {
+          "Name": "n8n-aws-fixture"
+        },
+        "vpc_id": "${aws_vpc.network.id}"
+      }
+    },
+    "aws_route": {
+      "internet": {
+        "destination_cidr_block": "0.0.0.0/0",
+        "gateway_id": "${aws_internet_gateway.gateway.id}",
+        "route_table_id": "${aws_route_table.public.id}"
+      }
+    },
+    "aws_route_table": {
+      "public": {
+        "tags": {
+          "Name": "n8n-aws-fixture"
+        },
+        "vpc_id": "${aws_vpc.network.id}"
+      }
+    },
+    "aws_route_table_association": {
+      "public": {
+        "route_table_id": "${aws_route_table.public.id}",
+        "subnet_id": "${aws_subnet.public.id}"
+      }
+    },
+    "aws_security_group": {
+      "network": {
+        "description": "Deployment node access",
+        "name": "n8n-aws-fixture-firewall",
+        "tags": {
+          "Name": "n8n-aws-fixture-firewall"
+        },
+        "vpc_id": "${aws_vpc.network.id}"
+      }
+    },
+    "aws_subnet": {
+      "public": {
+        "availability_zone": "us-east-1a",
+        "cidr_block": "10.76.1.0/24",
+        "map_public_ip_on_launch": true,
+        "tags": {
+          "Name": "n8n-aws-fixture"
+        },
+        "vpc_id": "${aws_vpc.network.id}"
+      }
+    },
+    "aws_vpc": {
+      "network": {
+        "cidr_block": "10.76.0.0/16",
+        "enable_dns_hostnames": true,
+        "enable_dns_support": true,
+        "tags": {
+          "Name": "n8n-aws-fixture"
+        }
+      }
+    },
+    "aws_vpc_security_group_egress_rule": {
+      "egress": {
+        "cidr_ipv4": "${each.value.cidr}",
+        "for_each": {
+          "all-ipv4": {
+            "cidr": "0.0.0.0/0",
+            "from_port": null,
+            "protocol": "-1",
+            "to_port": null
+          }
+        },
+        "from_port": "${each.value.from_port}",
+        "ip_protocol": "${each.value.protocol}",
+        "security_group_id": "${aws_security_group.network.id}",
+        "to_port": "${each.value.to_port}"
+      }
+    },
+    "aws_vpc_security_group_ingress_rule": {
+      "ingress": {
+        "cidr_ipv4": "${each.value.cidr}",
+        "for_each": {
+          "ssh:0.0.0.0/0": {
+            "cidr": "0.0.0.0/0",
+            "from_port": 22,
+            "protocol": "tcp",
+            "to_port": 22
+          },
+          "web-443:103.21.244.0/22": {
+            "cidr": "103.21.244.0/22",
+            "from_port": 443,
+            "protocol": "tcp",
+            "to_port": 443
+          },
+          "web-443:103.22.200.0/22": {
+            "cidr": "103.22.200.0/22",
+            "from_port": 443,
+            "protocol": "tcp",
+            "to_port": 443
+          },
+          "web-443:103.31.4.0/22": {
+            "cidr": "103.31.4.0/22",
+            "from_port": 443,
+            "protocol": "tcp",
+            "to_port": 443
+          },
+          "web-443:104.16.0.0/13": {
+            "cidr": "104.16.0.0/13",
+            "from_port": 443,
+            "protocol": "tcp",
+            "to_port": 443
+          },
+          "web-443:104.24.0.0/14": {
+            "cidr": "104.24.0.0/14",
+            "from_port": 443,
+            "protocol": "tcp",
+            "to_port": 443
+          },
+          "web-443:108.162.192.0/18": {
+            "cidr": "108.162.192.0/18",
+            "from_port": 443,
+            "protocol": "tcp",
+            "to_port": 443
+          },
+          "web-443:131.0.72.0/22": {
+            "cidr": "131.0.72.0/22",
+            "from_port": 443,
+            "protocol": "tcp",
+            "to_port": 443
+          },
+          "web-443:141.101.64.0/18": {
+            "cidr": "141.101.64.0/18",
+            "from_port": 443,
+            "protocol": "tcp",
+            "to_port": 443
+          },
+          "web-443:162.158.0.0/15": {
+            "cidr": "162.158.0.0/15",
+            "from_port": 443,
+            "protocol": "tcp",
+            "to_port": 443
+          },
+          "web-443:172.64.0.0/13": {
+            "cidr": "172.64.0.0/13",
+            "from_port": 443,
+            "protocol": "tcp",
+            "to_port": 443
+          },
+          "web-443:173.245.48.0/20": {
+            "cidr": "173.245.48.0/20",
+            "from_port": 443,
+            "protocol": "tcp",
+            "to_port": 443
+          },
+          "web-443:188.114.96.0/20": {
+            "cidr": "188.114.96.0/20",
+            "from_port": 443,
+            "protocol": "tcp",
+            "to_port": 443
+          },
+          "web-443:190.93.240.0/20": {
+            "cidr": "190.93.240.0/20",
+            "from_port": 443,
+            "protocol": "tcp",
+            "to_port": 443
+          },
+          "web-443:197.234.240.0/22": {
+            "cidr": "197.234.240.0/22",
+            "from_port": 443,
+            "protocol": "tcp",
+            "to_port": 443
+          },
+          "web-443:198.41.128.0/17": {
+            "cidr": "198.41.128.0/17",
+            "from_port": 443,
+            "protocol": "tcp",
+            "to_port": 443
+          },
+          "web-80:103.21.244.0/22": {
+            "cidr": "103.21.244.0/22",
+            "from_port": 80,
+            "protocol": "tcp",
+            "to_port": 80
+          },
+          "web-80:103.22.200.0/22": {
+            "cidr": "103.22.200.0/22",
+            "from_port": 80,
+            "protocol": "tcp",
+            "to_port": 80
+          },
+          "web-80:103.31.4.0/22": {
+            "cidr": "103.31.4.0/22",
+            "from_port": 80,
+            "protocol": "tcp",
+            "to_port": 80
+          },
+          "web-80:104.16.0.0/13": {
+            "cidr": "104.16.0.0/13",
+            "from_port": 80,
+            "protocol": "tcp",
+            "to_port": 80
+          },
+          "web-80:104.24.0.0/14": {
+            "cidr": "104.24.0.0/14",
+            "from_port": 80,
+            "protocol": "tcp",
+            "to_port": 80
+          },
+          "web-80:108.162.192.0/18": {
+            "cidr": "108.162.192.0/18",
+            "from_port": 80,
+            "protocol": "tcp",
+            "to_port": 80
+          },
+          "web-80:131.0.72.0/22": {
+            "cidr": "131.0.72.0/22",
+            "from_port": 80,
+            "protocol": "tcp",
+            "to_port": 80
+          },
+          "web-80:141.101.64.0/18": {
+            "cidr": "141.101.64.0/18",
+            "from_port": 80,
+            "protocol": "tcp",
+            "to_port": 80
+          },
+          "web-80:162.158.0.0/15": {
+            "cidr": "162.158.0.0/15",
+            "from_port": 80,
+            "protocol": "tcp",
+            "to_port": 80
+          },
+          "web-80:172.64.0.0/13": {
+            "cidr": "172.64.0.0/13",
+            "from_port": 80,
+            "protocol": "tcp",
+            "to_port": 80
+          },
+          "web-80:173.245.48.0/20": {
+            "cidr": "173.245.48.0/20",
+            "from_port": 80,
+            "protocol": "tcp",
+            "to_port": 80
+          },
+          "web-80:188.114.96.0/20": {
+            "cidr": "188.114.96.0/20",
+            "from_port": 80,
+            "protocol": "tcp",
+            "to_port": 80
+          },
+          "web-80:190.93.240.0/20": {
+            "cidr": "190.93.240.0/20",
+            "from_port": 80,
+            "protocol": "tcp",
+            "to_port": 80
+          },
+          "web-80:197.234.240.0/22": {
+            "cidr": "197.234.240.0/22",
+            "from_port": 80,
+            "protocol": "tcp",
+            "to_port": 80
+          },
+          "web-80:198.41.128.0/17": {
+            "cidr": "198.41.128.0/17",
+            "from_port": 80,
+            "protocol": "tcp",
+            "to_port": 80
+          }
+        },
+        "from_port": "${each.value.from_port}",
+        "ip_protocol": "${each.value.protocol}",
+        "security_group_id": "${aws_security_group.network.id}",
+        "to_port": "${each.value.to_port}"
+      }
+    }
+  },
+  "terraform": {
+    "required_providers": {
+      "aws": {
+        "source": "hashicorp/aws",
+        "version": "6.31.0"
+      }
+    },
+    "required_version": ">= 1.8.0"
+  }
+}

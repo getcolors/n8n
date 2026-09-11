@@ -49,9 +49,44 @@ required = [
     "n8n-backup-dir",
     # public name and TLS
     "cloudflare-zone", "cloudflare-record-name", "cloudflare-proxied",
-    # compute
-    "r2-bucket", "r2-endpoint",
 ]
+
+
+def backend_required(opts: dict) -> list[str]:
+    """The state backend's own keys, by `provider-backend`. `r2` names a
+    bucket and an endpoint; `s3` names a bucket and a region."""
+    return {"s3": ["s3-bucket", "s3-region"],
+            "r2": ["r2-bucket", "r2-endpoint"]}.get(opts.get("provider-backend"), [])
+
+
+def state_bucket_key(opts: dict) -> str:
+    """Which key names the OpenTofu state bucket under the selected backend."""
+    return "s3-bucket" if opts.get("provider-backend") == "s3" else "r2-bucket"
+
+
+def storage_managed(opts: dict) -> bool:
+    """Whether this deployment mints its own S3 buckets and bucket-scoped
+    credentials instead of taking operator-held pairs."""
+    return opts.get("n8n-storage-managed") is True
+
+
+def backup_endpoint(opts: dict):
+    """The backup bucket's endpoint: `n8n-backup-r2-endpoint`, or the Neon
+    endpoint when the key is absent, so desired state written for one bucket
+    provider keeps working with no edit."""
+    v = opts.get("n8n-backup-r2-endpoint")
+    return opts.get("neon-r2-endpoint") if missing(v) else v
+
+
+def backup_region(opts: dict):
+    """The backup bucket's region, defaulting to `neon-r2-region` the same
+    way."""
+    v = opts.get("n8n-backup-r2-region")
+    return opts.get("neon-r2-region") if missing(v) else v
+
+
+aws_region_re = re.compile(r"[a-z]{2}(?:-[a-z]+)+-\d+")
+bucket_name_re = re.compile(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")
 
 image_keys = ["neon-image", "neon-compute-image", "n8n-image", "n8n-runners-image",
               "caddy-image"]
@@ -174,7 +209,8 @@ def _as_int(value) -> int | None:
 
 def state_errors(opts: dict) -> list[str]:
     errors: list[str] = []
-    errors += [f":{k} is required" for k in required if missing(opts.get(k))]
+    errors += [f":{k} is required" for k in [*required, *backend_required(opts)]
+               if missing(opts.get(k))]
     errors += [f":{k} is required" for k in soak_keys if missing(opts.get(k))]
 
     errors += compute.errors(opts)
@@ -182,6 +218,27 @@ def state_errors(opts: dict) -> list[str]:
         errors.append(":provider-dns must be cloudflare")
     if not isinstance(opts.get("compute-prevent-destroy"), bool):
         errors.append(":compute-prevent-destroy must be true or false")
+
+    # --- state bucket ownership and managed storage -------------------------
+    if not (missing(opts.get("s3-bucket-mode"))
+            or _s(opts.get("s3-bucket-mode")) in ("external", "managed")):
+        errors.append(":s3-bucket-mode must be external or managed")
+    if _s(opts.get("s3-bucket-mode")) == "managed" and opts.get("provider-backend") != "s3":
+        errors.append(":s3-bucket-mode managed requires :provider-backend s3")
+    if "n8n-storage-managed" in opts and not isinstance(opts["n8n-storage-managed"], bool):
+        errors.append(":n8n-storage-managed must be true or false")
+    if storage_managed(opts):
+        if opts.get("provider-compute") != "aws":
+            errors.append("managed storage requires :provider-compute aws")
+        if opts.get("provider-backend") != "s3":
+            errors.append("managed storage requires :provider-backend s3")
+        if not aws_region_re.fullmatch(_s(opts.get("neon-r2-region"))):
+            errors.append("managed storage requires an AWS region in :neon-r2-region")
+        if opts.get("neon-r2-region") != backup_region(opts):
+            errors.append("managed storage bucket regions must match")
+        for k in ["neon-r2-bucket", "n8n-backup-r2-bucket"]:
+            if not bucket_name_re.fullmatch(_s(opts.get(k))):
+                errors.append(f":{k} must be a valid S3 bucket name")
 
     # --- images ------------------------------------------------------------
     for k in image_keys:
@@ -217,18 +274,19 @@ def state_errors(opts: dict) -> list[str]:
             errors.append(f":{k} must be a lowercase identifier")
     if _s(opts.get("neon-role")) == "cloud_admin":
         errors.append(":neon-role must not be cloud_admin")
-    if (not missing(opts.get("neon-r2-endpoint"))
-            and not url_re.fullmatch(_s(opts.get("neon-r2-endpoint")))):
-        errors.append(":neon-r2-endpoint must be an https URL")
+    for k in ["neon-r2-endpoint", "n8n-backup-r2-endpoint", "r2-endpoint"]:
+        if not missing(opts.get(k)) and not url_re.fullmatch(_s(opts.get(k))):
+            errors.append(f":{k} must be an https URL")
     # Live Neon data and OpenTofu state must not share a bucket. neon-vultr put
     # data inside the state bucket as a bootstrap deviation; repeating it here
     # would mean one lifecycle mistake could take out both.
+    state_bucket = _s(opts.get(state_bucket_key(opts)))
     if (not missing(opts.get("neon-r2-bucket"))
-            and _s(opts.get("neon-r2-bucket")) == _s(opts.get("r2-bucket"))):
+            and _s(opts.get("neon-r2-bucket")) == state_bucket):
         errors.append(":neon-r2-bucket must not be the OpenTofu state bucket")
     if (not missing(opts.get("n8n-backup-r2-bucket"))
             and _s(opts.get("n8n-backup-r2-bucket"))
-            in {_s(opts.get("r2-bucket")), _s(opts.get("neon-r2-bucket"))}):
+            in {state_bucket, _s(opts.get("neon-r2-bucket"))}):
         errors.append(":n8n-backup-r2-bucket must not be the state or live-data bucket")
 
     # --- application tier ---------------------------------------------------
@@ -333,7 +391,9 @@ def state_errors(opts: dict) -> list[str]:
             or _s(opts.get("r2-credential-sharing")) in ("split", "shared-accepted")):
         errors.append(":r2-credential-sharing must be split or shared-accepted")
 
-    return errors
+    # Green's `distinct`: the backend keys and the required list are two
+    # sources of one message, and the report names each problem once.
+    return list(dict.fromkeys(errors))
 
 
 def backend_secrets(opts: dict) -> list[str]:
@@ -372,15 +432,19 @@ def r2_secret_errors(opts: dict) -> list[str]:
 
 def secret_errors(opts: dict, event: str) -> list[str]:
     """Credentials a real event needs. A delete tears down infrastructure and
-    never converges anything, so it asks for the provider credentials only."""
+    never converges anything, so it asks for the provider credentials only.
+
+    With `n8n-storage-managed: true` the two bucket pairs are minted by the
+    storage stage and scoped to one bucket each by construction, so neither
+    the operator pairs nor the credential-sharing gate apply."""
+    create = event == "create" and not storage_managed(opts)
     keys = [*provider_secrets,
             *(application_secrets if event == "create" else []),
             *backend_secrets(opts)]
     errors = [f"required credential is not set: {par_name(k)}"
               for k in dict.fromkeys(keys) if missing(opts.get(k))]
-    if event != "create":
-        return errors
-    errors += r2_secret_errors(opts)
+    if create:
+        errors += r2_secret_errors(opts)
 
     # Blast radius, enforced rather than merely observed.
     #
@@ -398,7 +462,7 @@ def secret_errors(opts: dict, event: str) -> list[str]:
     # The shared pair stays reachable, because a first converge may predate the
     # scoped tokens -- but only as a DELIBERATE, committed choice that shows up
     # in a colors.yml diff, never as a silent default.
-    if not backup_credential_scoped(opts) and not credential_sharing_accepted(opts):
+    if create and not backup_credential_scoped(opts) and not credential_sharing_accepted(opts):
         errors.append(
             "backups would use the same R2 credential as OpenTofu state and live "
             f"Neon data. Supply {par_name('n8n-backup-r2-access-key-id')}"
@@ -406,7 +470,7 @@ def secret_errors(opts: dict, event: str) -> list[str]:
             " scoped to the backup bucket alone, or set "
             ":r2-credential-sharing: shared-accepted in colors.yml to record "
             "that the blast radius is accepted")
-    if not effective_r2(opts)["split"] and not credential_sharing_accepted(opts):
+    if create and not effective_r2(opts)["split"] and not credential_sharing_accepted(opts):
         errors.append(
             "live Neon data would use the same R2 credential as OpenTofu state. "
             f"Supply {par_name('neon-r2-access-key-id')} and "
@@ -415,7 +479,7 @@ def secret_errors(opts: dict, event: str) -> list[str]:
             ":r2-credential-sharing: shared-accepted in colors.yml")
     # n8n requires at least 32 characters. A shorter key is accepted by n8n
     # itself and then silently weakens every credential in the database.
-    if (not missing(opts.get("n8n-encryption-key"))
+    if (event == "create" and not missing(opts.get("n8n-encryption-key"))
             and len(_s(opts.get("n8n-encryption-key"))) < 32):
         errors.append(f"{par_name('n8n-encryption-key')} must be at least 32 characters")
     return errors

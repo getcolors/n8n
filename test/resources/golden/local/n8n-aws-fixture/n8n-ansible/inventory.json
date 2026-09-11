@@ -1,0 +1,22 @@
+{
+  "all" : {
+    "children" : {
+      "neon" : {
+        "hosts" : {
+          "n8n-aws-fixture" : null
+        }
+      },
+      "n8n" : {
+        "hosts" : {
+          "n8n-aws-fixture" : null
+        }
+      }
+    },
+    "hosts" : {
+      "n8n-aws-fixture" : {
+        "ansible_host" : "192.0.2.10",
+        "ansible_user" : "ubuntu"
+      }
+    }
+  }
+}

@@ -217,6 +217,37 @@
              n8n-smoke.sh, n8n-claim-owner.sh, n8n-rehearsal.sh, n8n-prune-drill.sh,
              n8n-restart-drill.sh]
 
+    # The backup pair, from the controller's environment: the operator's
+    # bucket-scoped token, or the pair the storage stage minted. Distinct from
+    # the Neon pair neon's play installs at /etc/neon/r2.env, so a backup a
+    # compromised host cannot erase stays possible. It reaches the host and
+    # nowhere else: not .colors/, not a golden, not git.
+    - name: Create the colors configuration directory
+      ansible.builtin.file: {path: /etc/colors, state: directory, mode: "0755"}
+
+    - name: Install the backup credential
+      ansible.builtin.copy:
+        dest: /etc/colors/backup-r2.env
+        mode: "0600"
+        content: |
+          BACKUP_R2_ACCESS_KEY_ID={{ lookup('env','COLORS_PAR_N8N_BACKUP_R2_ACCESS_KEY_ID') }}
+          BACKUP_R2_SECRET_ACCESS_KEY={{ lookup('env','COLORS_PAR_N8N_BACKUP_R2_SECRET_ACCESS_KEY') }}
+      no_log: true
+
+    # n8n-env.sh resolves the backup remote's credential: the installed pair,
+    # or the Neon pair when desired state records shared-accepted, or nothing.
+    # Nothing is a refusal: a backup timer with no credential would fail every
+    # six hours while the converge reported success.
+    - name: Refuse to converge without a backup credential
+      ansible.builtin.shell: |
+        set -euo pipefail
+        . /opt/neon/n8n-env.sh
+        [ "$BACKUP_CREDENTIAL_MODE" != none ] || { echo "no backup credential: supply COLORS_PAR_N8N_BACKUP_R2_* or record r2-credential-sharing: shared-accepted" >&2; exit 1; }
+        echo "backup credential: $BACKUP_CREDENTIAL_MODE"
+      args: {executable: /bin/bash}
+      register: n8n_backup_credential
+      changed_when: false
+
     # Into a directory the n8n container mounts, NOT /opt/neon. An earlier
     # version installed these host-side and invoked `node /opt/soak.js` inside
     # the container, where that path does not exist.

@@ -1,0 +1,11 @@
+{
+  "terraform" : {
+    "backend" : {
+      "s3" : {
+        "bucket" : "n8n-aws-fixture-state-123456789012-us-east-1",
+        "key" : "n8n-aws-fixture/n8n-storage.tfstate",
+        "region" : "us-east-1"
+      }
+    }
+  }
+}

@@ -71,7 +71,7 @@ resume; trap - EXIT
 # and a backup set that carried it would turn one bucket compromise into the
 # loss of every credential the database protects.
 for f in n8n.dump n8n-data.tar.gz manifest.txt; do
-  r2_put "$WORK/$f" "$DEST/$f"
+  backup_put "$WORK/$f" "$DEST/$f"
 done
 
 rm -rf "$WORK"

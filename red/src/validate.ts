@@ -39,9 +39,45 @@ export const required = [
   "n8n-backup-dir",
   // public name and TLS
   "cloudflare-zone", "cloudflare-record-name", "cloudflare-proxied",
-  // compute
-  "r2-bucket", "r2-endpoint",
 ];
+
+// The state backend's own keys, by `provider-backend`. `r2` names a bucket
+// and an endpoint; `s3` names a bucket and a region.
+export function backendRequired(opts: Opts): string[] {
+  switch (opts["provider-backend"]) {
+    case "s3": return ["s3-bucket", "s3-region"];
+    case "r2": return ["r2-bucket", "r2-endpoint"];
+    default: return [];
+  }
+}
+
+// Which key names the OpenTofu state bucket under the selected backend.
+export function stateBucketKey(opts: Opts): string {
+  return opts["provider-backend"] === "s3" ? "s3-bucket" : "r2-bucket";
+}
+
+// Whether this deployment mints its own S3 buckets and bucket-scoped
+// credentials instead of taking operator-held pairs.
+export function storageManaged(opts: Opts): boolean {
+  return opts["n8n-storage-managed"] === true;
+}
+
+// The backup bucket's endpoint: `n8n-backup-r2-endpoint`, or the Neon endpoint
+// when the key is absent, so desired state written for one bucket provider
+// keeps working with no edit.
+export function backupEndpoint(opts: Opts): unknown {
+  const value = opts["n8n-backup-r2-endpoint"];
+  return missing(value) ? opts["neon-r2-endpoint"] : value;
+}
+
+// The backup bucket's region, defaulting to `neon-r2-region` the same way.
+export function backupRegion(opts: Opts): unknown {
+  const value = opts["n8n-backup-r2-region"];
+  return missing(value) ? opts["neon-r2-region"] : value;
+}
+
+const awsRegionRe = /^[a-z]{2}(?:-[a-z]+)+-\d+$/;
+const bucketNameRe = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/;
 
 export const imageKeys = [
   "neon-image", "neon-compute-image", "n8n-image", "n8n-runners-image",
@@ -166,7 +202,7 @@ function asInt(value: unknown): number | undefined {
 
 export function stateErrors(opts: Opts): string[] {
   const errors: string[] = [];
-  for (const key of required) {
+  for (const key of [...required, ...backendRequired(opts)]) {
     if (missing(opts[key])) errors.push(`:${key} is required`);
   }
   for (const key of soakKeys) {
@@ -179,6 +215,26 @@ export function stateErrors(opts: Opts): string[] {
   }
   if (typeof opts["compute-prevent-destroy"] !== "boolean") {
     errors.push(":compute-prevent-destroy must be true or false");
+  }
+
+  // --- state bucket ownership and managed storage ---------------------------
+  if (!(missing(opts["s3-bucket-mode"]) || ["external", "managed"].includes(s(opts["s3-bucket-mode"])))) {
+    errors.push(":s3-bucket-mode must be external or managed");
+  }
+  if (s(opts["s3-bucket-mode"]) === "managed" && opts["provider-backend"] !== "s3") {
+    errors.push(":s3-bucket-mode managed requires :provider-backend s3");
+  }
+  if ("n8n-storage-managed" in opts && typeof opts["n8n-storage-managed"] !== "boolean") {
+    errors.push(":n8n-storage-managed must be true or false");
+  }
+  if (storageManaged(opts)) {
+    if (opts["provider-compute"] !== "aws") errors.push("managed storage requires :provider-compute aws");
+    if (opts["provider-backend"] !== "s3") errors.push("managed storage requires :provider-backend s3");
+    if (!awsRegionRe.test(s(opts["neon-r2-region"]))) errors.push("managed storage requires an AWS region in :neon-r2-region");
+    if (opts["neon-r2-region"] !== backupRegion(opts)) errors.push("managed storage bucket regions must match");
+    for (const key of ["neon-r2-bucket", "n8n-backup-r2-bucket"]) {
+      if (!bucketNameRe.test(s(opts[key]))) errors.push(`:${key} must be a valid S3 bucket name`);
+    }
   }
 
   // --- images --------------------------------------------------------------
@@ -225,18 +281,20 @@ export function stateErrors(opts: Opts): string[] {
   if (s(opts["neon-role"]) === "cloud_admin") {
     errors.push(":neon-role must not be cloud_admin");
   }
-  if (!missing(opts["neon-r2-endpoint"]) && !urlRe.test(s(opts["neon-r2-endpoint"]))) {
-    errors.push(":neon-r2-endpoint must be an https URL");
+  for (const key of ["neon-r2-endpoint", "n8n-backup-r2-endpoint", "r2-endpoint"]) {
+    if (!missing(opts[key]) && !urlRe.test(s(opts[key]))) {
+      errors.push(`:${key} must be an https URL`);
+    }
   }
   // Live Neon data and OpenTofu state must not share a bucket. neon-vultr put
   // data inside the state bucket as a bootstrap deviation; repeating it here
   // would mean one lifecycle mistake could take out both.
   if (!missing(opts["neon-r2-bucket"]) &&
-      s(opts["neon-r2-bucket"]) === s(opts["r2-bucket"])) {
+      s(opts["neon-r2-bucket"]) === s(opts[stateBucketKey(opts)])) {
     errors.push(":neon-r2-bucket must not be the OpenTofu state bucket");
   }
   if (!missing(opts["n8n-backup-r2-bucket"]) &&
-      new Set([s(opts["r2-bucket"]), s(opts["neon-r2-bucket"])])
+      new Set([s(opts[stateBucketKey(opts)]), s(opts["neon-r2-bucket"])])
         .has(s(opts["n8n-backup-r2-bucket"]))) {
     errors.push(":n8n-backup-r2-bucket must not be the state or live-data bucket");
   }
@@ -357,7 +415,7 @@ export function stateErrors(opts: Opts): string[] {
     errors.push(":r2-credential-sharing must be split or shared-accepted");
   }
 
-  return errors;
+  return [...new Set(errors)];
 }
 
 export function backendSecrets(opts: Opts): string[] {
@@ -393,7 +451,12 @@ export function r2SecretErrors(opts: Opts): string[] {
 
 // Credentials a real event needs. A delete tears down infrastructure and never
 // converges anything, so it asks for the provider credentials only.
+//
+// With `n8n-storage-managed: true` the two bucket pairs are minted by the
+// storage stage and scoped to one bucket each by construction, so neither the
+// operator pairs nor the credential-sharing gate apply.
 export function secretErrors(opts: Opts, event: string): string[] {
+  const create = event === "create" && !storageManaged(opts);
   const keys = [...new Set([
     ...providerSecrets,
     ...(event === "create" ? applicationSecrets : []),
@@ -402,7 +465,7 @@ export function secretErrors(opts: Opts, event: string): string[] {
   const errors = keys.filter((key) => missing(opts[key]))
     .map((key) => `required credential is not set: ${parName(key)}`);
   if (event !== "create") return errors;
-  errors.push(...r2SecretErrors(opts));
+  if (create) errors.push(...r2SecretErrors(opts));
 
   // Blast radius, enforced rather than merely observed.
   //
@@ -420,7 +483,7 @@ export function secretErrors(opts: Opts, event: string): string[] {
   // The shared pair stays reachable, because a first converge may predate the
   // scoped tokens -- but only as a DELIBERATE, committed choice that shows up
   // in a colors.yml diff, never as a silent default.
-  if (!backupCredentialScoped(opts) && !credentialSharingAccepted(opts)) {
+  if (create && !backupCredentialScoped(opts) && !credentialSharingAccepted(opts)) {
     errors.push("backups would use the same R2 credential as OpenTofu state and live " +
       `Neon data. Supply ${parName("n8n-backup-r2-access-key-id")}` +
       ` and ${parName("n8n-backup-r2-secret-access-key")}` +
@@ -428,7 +491,7 @@ export function secretErrors(opts: Opts, event: string): string[] {
       ":r2-credential-sharing: shared-accepted in colors.yml to record " +
       "that the blast radius is accepted");
   }
-  if (!effectiveR2(opts).split && !credentialSharingAccepted(opts)) {
+  if (create && !effectiveR2(opts).split && !credentialSharingAccepted(opts)) {
     errors.push("live Neon data would use the same R2 credential as OpenTofu state. " +
       `Supply ${parName("neon-r2-access-key-id")} and ` +
       `${parName("neon-r2-secret-access-key")}` +
