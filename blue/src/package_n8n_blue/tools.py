@@ -460,10 +460,11 @@ SMOKE_SQL = (
 
 async def read_remote_password(opts: dict) -> str | None:
     """The generated application-role password, read over SSH and held only in
-    this process. Never merged into opts, never printed."""
+    this process. Never merged into opts, never printed. Read through ``sudo -n``:
+    the secrets directory is root-owned 0700 and the AWS login is ``ubuntu``."""
     result = await run_quiet(
         ["ssh", "-o", "BatchMode=yes", *(["-i", str(opts["ssh-private-key-path"])] if opts.get("ssh-private-key-path") else []), ssh_config.host_alias(opts),
-         "cat", "/etc/neon/secrets/neon_role_password"], {}, 20000)
+         "sudo", "-n", "cat", "--", "/etc/neon/secrets/neon_role_password"], {}, 20000)
     if result.exit != 0:
         return None
     password = str(result.out or "").strip()

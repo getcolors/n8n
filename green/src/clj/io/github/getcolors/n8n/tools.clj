@@ -362,9 +362,10 @@
 
 (defn read-remote-password
   "The generated application-role password, read over SSH and held only in this
-  process. Never merged into opts, never printed."
+  process. Never merged into opts, never printed. Read through `sudo -n`: the
+  secrets directory is root-owned 0700 and the AWS login is `ubuntu`."
   [opts]
-  (let [r (run-quiet (vec (concat ["ssh" "-o" "BatchMode=yes"] (when-let [path (:ssh-private-key-path opts)] ["-i" path]) [(ssh-config/host-alias opts) "cat" "/etc/neon/secrets/neon_role_password"]))
+  (let [r (run-quiet (vec (concat ["ssh" "-o" "BatchMode=yes"] (when-let [path (:ssh-private-key-path opts)] ["-i" path]) [(ssh-config/host-alias opts) "sudo" "-n" "cat" "--" "/etc/neon/secrets/neon_role_password"]))
                      {} 20000)]
     (when (zero? (:exit r)) (str/trim (str (:out r))))))
 

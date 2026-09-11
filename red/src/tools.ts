@@ -483,10 +483,11 @@ export const smokeSql =
   " SELECT count(*) FROM colors_smoke;";
 
 // The generated application-role password, read over SSH and held only in this
-// process. Never merged into opts, never printed.
+// process. Never merged into opts, never printed. Read through `sudo -n`: the
+// secrets directory is root-owned 0700 and the AWS login is `ubuntu`.
 export async function readRemotePassword(opts: Opts): Promise<string | undefined> {
   const result = await runQuiet(["ssh", "-o", "BatchMode=yes", ...(opts["ssh-private-key-path"] ? ["-i",String(opts["ssh-private-key-path"])] : []), sshConfig.hostAlias(opts),
-    "cat", "/etc/neon/secrets/neon_role_password"], {}, 20000);
+    "sudo", "-n", "cat", "--", "/etc/neon/secrets/neon_role_password"], {}, 20000);
   if (result.exit !== 0) return undefined;
   const password = String(result.out ?? "").trim();
   return password.length > 0 ? password : undefined;
