@@ -32,7 +32,7 @@
     "parity": "./scripts/parity.sh"
   },
   "dependencies": {
-    "colors-compute-red": "github:getcolors/colors-compute#09ec539e75dc21c4dafb019eb8f9da276e695f6f",
+    "colors-compute-red": "github:getcolors/colors-compute#ae28ea74962bb1897fa6365c143c1d43ac1fe095",
     "package-neon-red": "github:getcolors/neon#e19a213067d307b55d1b37a2e83cdc1a150b7d91"
   }
 }
