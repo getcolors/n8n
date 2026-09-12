@@ -41,7 +41,7 @@ import { homedir } from "node:os";
 // directory, which would halt Bun's upward resolution of `package-n8n-red`
 // and break the development symlink at red/red.
 const PINS = {
-  "package-n8n-red": "github:getcolors/n8n#600b8092e38ebd996f37f1a1a2ad345580bc262a",
+  "package-n8n-red": "github:getcolors/n8n#30249bd29554b0996e228218b4c4309aa3337e83",
   "package-once-red": "github:getcolors/once#a1fe1be7a427dd2e406ff7befd1c43a53e7c3618",
   // The Red SDK is a peer of colors-compute-red, not a dependency: a cold
   // cache installs nothing for a peer, so the consumer pins it explicitly, at

@@ -52,7 +52,7 @@
 ;; cannot resolve its own library says so rather than inventing a SHA or
 ;; silently falling back to whatever is lying around. `bb pin` refuses to stamp
 ;; a dirty or unpushed HEAD for the same reason.
-(def ^:private n8n-sha "600b8092e38ebd996f37f1a1a2ad345580bc262a")
+(def ^:private n8n-sha "30249bd29554b0996e228218b4c4309aa3337e83")
 
 (def ^:private n8n-git-url "https://github.com/getcolors/n8n.git")
 (def ^:private green-git-url "https://github.com/getcolors/green.git")
